@@ -1,0 +1,192 @@
+plan:
+  id: "whatsapp-gateway-mvp-1"
+  status: "todo"
+  title: "Build Core WhatsApp Gateway with whatsmeow Provider"
+  introduction: |
+    Alright, let's get this thing built. The goal is to lay down the foundational infrastructure for the WhatsApp API Gateway SaaS, as spec'd out in the README. We're not boiling the ocean here. We'll start by building the central control plane (the Gateway Controller) using Bun.sh and setting up the database schema with Drizzle ORM.
+
+    The first and only provider we'll focus on in this initial build is `tulir/whatsmeow`. It's fast, written in Go, and a solid choice to prove the architecture. We'll containerize it and get the Gateway Controller to manage its lifecycle—spinning it up, tearing it down, and proxying API calls to it. By the end of this plan, we'll have a functional MVP that can create an instance, connect a phone via QR code, and send/receive messages. Let's ship it.
+  parts:
+    - id: "a1b2c3d4-core-setup"
+      status: "todo"
+      isolation: false
+      agent_id: "architect-swarm"
+      name: "Part 1: Project Scaffolding & Database Schema"
+      reason: |
+        First things first. We need a skeleton to hang the rest of the code on. This part establishes the core directory structure, initializes the Bun.sh project for the gateway controller, and sets up the PostgreSQL database schema using Drizzle ORM. Without this, we're just writing code in a vacuum.
+      steps:
+        - id: "s1-create-dirs"
+          status: "todo"
+          name: "1. Create Directory Structure"
+          reason: |
+            A clean project structure is non-negotiable. This sets up the folders outlined in the README, creating logical separation for the gateway, providers, and database schemas.
+          files: []
+          operations:
+            - "Create top-level directories: `gateway/`, `providers/`, `drizzle/`."
+            - "Inside `providers/`, create the `whatsmeow/` directory."
+        - id: "s2-init-gateway"
+          status: "todo"
+          name: "2. Initialize Gateway Controller (Bun)"
+          reason: |
+            The gateway is the brains of the operation. We're using Bun for its speed. This step initializes a new Bun project and installs essential dependencies for building an HTTP API server.
+          files:
+            - "gateway/package.json"
+            - "gateway/src/index.ts"
+          operations:
+            - "Run `bun init` inside the `gateway/` directory."
+            - "Add initial dependencies: `elysia` for the web server, `drizzle-orm`, `postgres`."
+            - "Create a basic `src/index.ts` with a health check endpoint (e.g., `GET /`) to confirm the server runs."
+        - id: "s3-define-schema"
+          status: "todo"
+          name: "3. Define Drizzle ORM Schemas"
+          reason: |
+            We need to store state. This step defines the core database tables for managing instances and users. The `instances` table will hold configuration for each phone number, including its provider, webhook URL, and resource limits.
+          files:
+            - "drizzle/schema.ts"
+            - "drizzle/drizzle.config.ts"
+          operations:
+            - "Create `drizzle/schema.ts`."
+            - "Define the `users` table schema (id, email, api_key)."
+            - "Define the `instances` table schema (id, user_id, phone_number, provider, webhook_url, status, cpu_limit, memory_limit)."
+            - "Set up `drizzle.config.ts` to point to the schema file and the database connection string (from env vars)."
+      context_files:
+        compact:
+          - README.md
+        medium:
+          - README.md
+        extended:
+          - README.md
+
+    - id: "b2c3d4e5-whatsmeow-provider"
+      status: "todo"
+      isolation: false
+      agent_id: "go-provider-swarm"
+      depends_on: ["a1b2c3d4-core-setup"]
+      name: "Part 2: `whatsmeow` Provider Service"
+      reason: |
+        The gateway is useless without a provider. This part focuses on building the `whatsmeow` service. This is a standalone Go application that uses the `tulir/whatsmeow` library to connect to WhatsApp. It will expose a simple internal API (e.g., HTTP/gRPC) for the Gateway Controller to communicate with it and will be containerized with Docker.
+      steps:
+        - id: "s1-init-go-app"
+          status: "todo"
+          name: "1. Initialize Go Application"
+          reason: |
+            Set up the Go module and basic application structure for the whatsmeow provider.
+          files:
+            - "providers/whatsmeow/go.mod"
+            - "providers/whatsmeow/main.go"
+          operations:
+            - "Run `go mod init` inside `providers/whatsmeow/`."
+            - "Add the `tulir/whatsmeow` dependency."
+            - "In `main.go`, write boilerplate code to create a whatsmeow client and handle the connection logic (device store, QR code generation)."
+            - "The QR code should be printed to the console or exposed via an endpoint for now."
+        - id: "s2-internal-api"
+          status: "todo"
+          name: "2. Implement Internal API"
+          reason: |
+            The Gateway Controller needs a way to command the `whatsmeow` instance. We'll build a simple internal HTTP API for this.
+          files:
+            - "providers/whatsmeow/main.go"
+          operations:
+            - "Use Go's standard `net/http` library to create an HTTP server."
+            - "Create an endpoint `POST /send` that accepts a `to` number and a `text` message, and uses the whatsmeow client to send it."
+            - "Create an endpoint `GET /qr` that returns the current QR code data (e.g., as base64 PNG or a string)."
+            - "Implement logic to push events (e.g., received messages) to a configurable webhook URL (provided by the Gateway Controller via an environment variable)."
+        - id: "s3-dockerize"
+          status: "todo"
+          name: "3. Dockerize the Service"
+          reason: |
+            One container per number. This is the core architectural principle. We need a `Dockerfile` to package the Go application into a self-contained, runnable image.
+          files:
+            - "providers/whatsmeow/Dockerfile"
+          operations:
+            - "Create a multi-stage `Dockerfile`."
+            - "The build stage compiles the Go binary."
+            - "The final stage uses a minimal base image (e.g., `scratch` or `alpine`) and copies only the compiled binary and session files path."
+            - "Use a non-root user for security."
+            - "Define a volume for `/session` to persist whatsmeow state."
+      context_files:
+        compact:
+          - README.md
+          - drizzle/schema.ts
+        medium:
+          - README.md
+          - drizzle/schema.ts
+        extended:
+          - README.md
+          - drizzle/schema.ts
+
+    - id: "c3d4e5f6-api-integration"
+      status: "todo"
+      isolation: false
+      agent_id: "gateway-swarm"
+      depends_on: ["b2c3d4e5-whatsmeow-provider"]
+      name: "Part 3: Gateway API & Container Management"
+      reason: |
+        This is where it all comes together. We'll implement the public-facing REST API on the Gateway Controller and add the logic to manage the `whatsmeow` Docker containers. This involves interacting with the Docker daemon to start, stop, and communicate with the provider containers.
+      steps:
+        - id: "s1-add-docker-sdk"
+          status: "todo"
+          name: "1. Integrate Docker SDK"
+          reason: |
+            The gateway needs to speak Docker. We'll add a library to manage containers programmatically.
+          files:
+            - "gateway/package.json"
+            - "gateway/src/docker.service.ts"
+          operations:
+            - "Add a Docker Engine SDK package for Node.js (e.g., `dockerode`)."
+            - "Create a `docker.service.ts` to abstract container operations: `createContainer`, `startContainer`, `stopContainer`, `getContainerLogs`."
+        - id: "s2-implement-instance-api"
+          status: "todo"
+          name: "2. Implement Instance Management API"
+          reason: |
+            Expose the core functionality described in the README for creating and managing instances.
+          files:
+            - "gateway/src/index.ts"
+          operations:
+            - "Implement `POST /api/instances`: validates input, creates a record in the DB, and calls the Docker service to build/pull and run the `whatsmeow` image with the correct environment variables (e.g., webhook URL)."
+            - "Implement `GET /api/instances/:id/qr`: finds the corresponding container and proxies the request to its internal `/qr` endpoint."
+            - "Implement `DELETE /api/instances/:id`: stops and removes the container, then deletes the DB record."
+        - id: "s3-implement-send-api"
+          status: "todo"
+          name: "3. Implement Send Message API"
+          reason: |
+            The primary function: sending a message. This endpoint will act as a proxy to the correct provider container.
+          files:
+            - "gateway/src/index.ts"
+          operations:
+            - "Implement `POST /api/instances/:id/send`."
+            - "The handler will look up the instance in the database to find its container details."
+            - "It will then forward the request payload to the container's internal `/send` endpoint."
+            - "Handle errors gracefully (e.g., container not running, invalid number)."
+      context_files:
+        compact:
+          - README.md
+          - drizzle/schema.ts
+          - providers/whatsmeow/main.go
+        medium:
+          - README.md
+          - drizzle/schema.ts
+          - providers/whatsmeow/main.go
+          - gateway/src/docker.service.ts
+        extended:
+          - README.md
+          - drizzle/schema.ts
+          - providers/whatsmeow/Dockerfile
+          - providers/whatsmeow/main.go
+          - gateway/package.json
+          - gateway/src/docker.service.ts
+
+  conclusion: |
+    Once these parts are complete, we will have a solid, vertically-integrated slice of the final product. A user will be able to hit a single API to create a WhatsApp instance, scan a QR code to link their phone, and then use the API to send messages. Incoming messages will be forwarded to their specified webhook.
+
+    This MVP validates the core architecture: a central controller managing isolated, containerized providers. It sets the stage for adding more providers (Baileys, etc.), implementing advanced features like zero-downtime migration, and building out the SaaS-specific features like billing and multi-tenancy.
+  context_files:
+    compact:
+      - README.md
+      - user.prompt.md
+    medium:
+      - README.md
+      - user.prompt.md
+    extended:
+      - README.md
+      - user.prompt.md

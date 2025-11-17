@@ -1,0 +1,233 @@
+plan:
+  id: 'align-impl-with-readme-vision-5b9e'
+  status: 'todo'
+  title: 'Refactor: Align Implementation with a Decoupled SaaS Architecture'
+  introduction: |
+    The current implementation demonstrates a functional `whatsmeow` provider but falls short of the architectural promises laid out in `README.md`. Key features like "Zero-Downtime Migration," centralized state persistence, and true multi-tenancy are conceptual rather than implemented. The system's reliance on local SQLite completely prevents migration and centralized control.
+
+    This master plan orchestrates a significant refactoring to build a robust, decoupled architecture. Instead of the naive approach of giving the provider direct database access, we will introduce an internal State Management API within the gateway. Providers will be re-engineered to be "dumb" clients that persist their session data through this secure API, completely abstracting away the underlying PostgreSQL storage. This change is the lynchpin for security, scalability, and enabling the zero-downtime migration promise.
+  parts:
+    - id: 'gw-provider-dynamics-b1c2'
+      status: 'todo'
+      isolation: false
+      agent_id: 'agent-elysia-ts'
+      name: 'Part 1: Gateway - Dynamic Provider Image Selection'
+      reason: |
+        The `README.md` advertises a multi-provider platform, but `docker.service.ts` hardcodes the `DOCKER_IMAGE` to `whatsapp-gateway-saas-whatsmeow`. This part makes the gateway capable of launching different provider containers based on the API request, a foundational requirement.
+      steps:
+        - id: 's1-provider-map-d3e4'
+          status: 'todo'
+          name: '1. Abstract provider-to-image mapping'
+          reason: |
+            To avoid hardcoding image names directly in the service logic and to create a scalable way to add new providers.
+          files:
+            - 'gateway/src/docker.service.ts'
+          operations:
+            - 'In `docker.service.ts`, remove the hardcoded `DOCKER_IMAGE` constant.'
+            - 'Create a simple mapping or function, e.g., `getImageForProvider(provider: string): string`, that returns the appropriate Docker image name (e.g., `whatsmeow` -> `jelipro/whatsapp-gateway-whatsmeow:latest`).'
+        - id: 's2-update-container-create-f5g6'
+          status: 'todo'
+          name: '2. Update container creation logic'
+          reason: |
+            To use the dynamic image name when creating a new container.
+          files:
+            - 'gateway/src/docker.service.ts'
+            - 'gateway/src/index.ts'
+          operations:
+            - 'Modify the `CreateContainerOptions` interface in `docker.service.ts` to include `provider: string`.'
+            - 'Update the `createAndStartContainer` function to accept the new `options` and use `getImageForProvider(options.provider)` for the `Image` property in `docker.createContainer`.'
+            - 'In `gateway/src/index.ts`, within the `POST /instances` endpoint, pass `body.provider` to the `createAndStartContainer` call.'
+      context_files:
+        compact:
+          - 'gateway/src/docker.service.ts'
+          - 'gateway/src/index.ts'
+        medium:
+          - 'gateway/src/docker.service.ts'
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+        extended:
+          - 'gateway/src/docker.service.ts'
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+          - 'README.md'
+
+    - id: 'gw-auth-multitenant-h7i8'
+      status: 'todo'
+      isolation: false
+      agent_id: 'agent-elysia-ts'
+      depends_on: []
+      name: 'Part 2: Gateway - Implement True Multi-Tenant Auth'
+      reason: |
+        The system is meant to be a multi-tenant SaaS, but currently uses a shared `API_SECRET` and hardcodes `userId: 1`. This part implements proper API key authentication against the `users` table, making the system truly multi-tenant ready.
+      steps:
+        - id: 's1-refactor-auth-middleware-j9k0'
+          status: 'todo'
+          name: '1. Refactor auth middleware for API key lookup'
+          reason: |
+            To switch from a static secret to a dynamic, per-user API key lookup in the database.
+          files:
+            - 'gateway/src/index.ts'
+          operations:
+            - 'In `gateway/src/index.ts`, modify the `.onBeforeHandle` middleware.'
+            - 'Instead of checking against `process.env.API_SECRET`, extract the bearer token from the `Authorization` header.'
+            - 'Query the `users` table using Drizzle to find a user where `apiKey` matches the provided token.'
+            - 'If a user is found, attach the user object to the request context for later use. If not, return a 401 Unauthorized error.'
+        - id: 's2-use-authenticated-user-l1m2'
+          status: 'todo'
+          name: '2. Use authenticated user for instance creation'
+          reason: |
+            To associate newly created instances with the correctly authenticated user, instead of a hardcoded one.
+          files:
+            - 'gateway/src/index.ts'
+          operations:
+            - 'In the `POST /instances` endpoint, retrieve the authenticated user from the request context.'
+            - 'Replace the hardcoded `userId: 1` with the `id` of the authenticated user when inserting the new instance into the database.'
+      context_files:
+        compact:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+        medium:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+          - '.env.example'
+        extended:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+          - '.env.example'
+          - 'README.md'
+
+    - id: 'gw-state-api-p5q6'
+      status: 'todo'
+      isolation: false
+      agent_id: 'agent-elysia-ts'
+      name: 'Part 3: Gateway - Create an Internal State Management API'
+      reason: |
+        To create a secure API boundary for state persistence. This decouples providers from the database, centralizes state logic, and enhances security by preventing direct DB access from provider containers.
+      steps:
+        - id: 's1-db-schema-r7s8'
+          status: 'todo'
+          name: '1. Create `instance_state` table schema'
+          reason: |
+            To have a generic key-value table in PostgreSQL to store arbitrary session data for any provider, scoped by instance ID.
+          files:
+            - 'drizzle/schema.ts'
+          operations:
+            - 'Add a new table `instanceState` to `drizzle/schema.ts`.'
+            - 'Define columns: `id` (serial PK), `instanceId` (integer, foreign key to `instances.id`), `key` (varchar, unique with `instanceId`), `value` (bytea or text for storing serialized state).'
+            - 'Run `drizzle-kit generate` to create the migration file.'
+        - id: 's2-build-internal-api-t9u0'
+          status: 'todo'
+          name: '2. Build internal CRUD endpoints for state'
+          reason: |
+            To expose the database operations for the `instanceState` table via a controlled, internal-only API.
+          files:
+            - 'gateway/src/index.ts'
+          operations:
+            - 'Create a new group for internal routes, e.g., `.group('/internal', ...)`.'
+            - 'Implement endpoints like `GET /state/:instanceId/:key`, `POST /state/:instanceId`, `DELETE /state/:instanceId/:key`.'
+            - 'These handlers will perform the corresponding SELECT, INSERT/UPDATE, and DELETE operations on the `instanceState` table using Drizzle.'
+            - 'Add a new middleware to this group that checks for an `INTERNAL_API_SECRET` in a header to secure these endpoints from public access.'
+      context_files:
+        compact:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+        medium:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+          - '.env.example'
+        extended:
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+          - '.env.example'
+          - 'README.md'
+
+    - id: 'provider-api-store-v1w2'
+      status: 'todo'
+      isolation: true
+      agent_id: 'agent-go-decoupled'
+      depends_on: ['gw-state-api-p5q6']
+      name: 'Part 4: Provider - Implement API-Backed State Store'
+      reason: |
+        To refactor the `whatsmeow` provider to be a stateless service that persists its session via the new gateway API, instead of a local SQLite file. This is the key to enabling migrations and horizontal scaling.
+      steps:
+        - id: 's1-create-custom-store-x3y4'
+          status: 'todo'
+          name: '1. Implement custom `ApiStore` in Go'
+          reason: |
+            To create a `whatsmeow`-compatible store that forwards all state operations over HTTP to the gateway's internal API.
+          files:
+            - 'providers/whatsmeow/main.go'
+          operations:
+            - 'Create a new struct `ApiStore` that implements the `store.DeviceStore` interface from `go.mau.fi/whatsmeow/store`.'
+            - 'The methods (`GetDevice`, `PutDevice`, etc.) will not touch the filesystem. They will use Go''s `net/http` client to call the gateway API endpoints (`GET /internal/state/...`, `POST /internal/state/...`).'
+            - 'The `ApiStore` will be initialized with config from environment variables: `GATEWAY_INTERNAL_URL`, `INSTANCE_ID`, and `INTERNAL_API_SECRET`.'
+        - id: 's2-integrate-api-store-z5a6'
+          status: 'todo'
+          name: '2. Integrate `ApiStore` and remove SQLite'
+          reason: |
+            To swap out the old `sqlstore` with the new `ApiStore` and clean up all obsolete dependencies.
+          files:
+            - 'providers/whatsmeow/main.go'
+            - 'providers/whatsmeow/go.mod'
+            - 'providers/whatsmeow/Dockerfile'
+          operations:
+            - 'In `main.go`, replace `sqlstore.New(...)` with the initialization of your new `ApiStore`.'
+            - 'Pass the `ApiStore` instance to `whatsmeow.NewClient(...)`.'
+            - 'In `go.mod`, remove the `github.com/mattn/go-sqlite3` dependency.'
+            - 'In the `Dockerfile`, remove all CGO/SQLite dependencies (`gcc`, `musl-dev`, `sqlite`) and set `CGO_ENABLED=0` for a smaller, static binary.'
+        - id: 's3-update-gateway-env-b7c8'
+          status: 'todo'
+          name: '3. Gateway must inject new environment variables'
+          reason: |
+            To provide the provider container with the necessary configuration to connect back to the gateway's internal state API.
+          files:
+            - 'gateway/src/docker.service.ts'
+          operations:
+            - 'In `createAndStartContainer` in `docker.service.ts`, add the new environment variables to the `Env` array passed to the container.'
+            - 'These include: `INSTANCE_ID=${options.instanceId}`, `GATEWAY_INTERNAL_URL=http://<gateway_ip>:<port>`, and `INTERNAL_API_SECRET=${process.env.INTERNAL_API_SECRET}`.'
+            - 'Note: Determining the gateway''s IP might require inspecting the Docker network or using a service name if running in swarm/compose.'
+      context_files:
+        compact:
+          - 'providers/whatsmeow/main.go'
+          - 'gateway/src/docker.service.ts'
+        medium:
+          - 'providers/whatsmeow/main.go'
+          - 'gateway/src/docker.service.ts'
+          - 'providers/whatsmeow/Dockerfile'
+          - 'providers/whatsmeow/go.mod'
+        extended:
+          - 'providers/whatsmeow/main.go'
+          - 'gateway/src/docker.service.ts'
+          - 'providers/whatsmeow/Dockerfile'
+          - 'providers/whatsmeow/go.mod'
+          - 'gateway/src/index.ts'
+          - 'drizzle/schema.ts'
+
+  conclusion: |
+    Upon completion, the application will have a professionally decoupled architecture that truly reflects the README's vision. The gateway will serve as the brain and single source of truth, while providers act as disposable, stateless workers. This model is vastly more secure, manageable, and provides the actual foundation needed for zero-downtime migrations and horizontal scaling. We're moving from a monolithic PoC to a legitimate microservices-based SaaS platform.
+  context_files:
+    compact:
+      - 'README.md'
+      - 'gateway/src/index.ts'
+      - 'gateway/src/docker.service.ts'
+      - 'providers/whatsmeow/main.go'
+      - 'drizzle/schema.ts'
+    medium:
+      - 'README.md'
+      - 'gateway/src/index.ts'
+      - 'gateway/src/docker.service.ts'
+      - 'providers/whatsmeow/main.go'
+      - 'providers/whatsmeow/Dockerfile'
+      - 'drizzle/schema.ts'
+      - '.env.example'
+    extended:
+      - 'README.md'
+      - 'gateway/src/index.ts'
+      - 'gateway/src/docker.service.ts'
+      - 'providers/whatsmeow/main.go'
+      - 'providers/whatsmeow/Dockerfile'
+      - 'providers/whatsmeow/go.mod'
+      - 'drizzle/schema.ts'
+      - '.env.example'
+      - 'package.json'
+      - 'gateway/package.json'
