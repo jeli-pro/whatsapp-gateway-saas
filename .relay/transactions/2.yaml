@@ -1,0 +1,176 @@
+uuid: 4a3a69a0-0f2c-4610-8588-44474f395b28
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T12:56:12.291Z'
+gitCommitMsg: >-
+  feat(whatsmeow): productionize Dockerfile
+
+  Refactors the whatsmeow provider's Dockerfile to align with production best
+  practices.
+
+  - Implements a multi-stage build to minimize final image size. - Optimizes
+  Docker layer caching for Go modules to speed up CI/CD builds. - Builds a
+  statically-linked, stripped binary. - Uses a minimal alpine base image for the
+  final stage. - Adds a non-root user and correctly configures permissions for
+  the session volume to enhance security. - Switches from CMD to ENTRYPOINT for
+  the container's executable.
+promptSummary: >-
+  Refactor the whatsmeow provider Dockerfile to be production-ready, following
+  the plan to optimize dependency caching, create a static binary, and use a
+  minimal, secure final image.
+reasoning:
+  - >-
+    Based on your request to productionize the `whatsmeow` provider, I will
+    refactor its Dockerfile.
+  - 'This update implements a best-practice, multi-stage build process to:'
+  - >-
+    1.  **Speed up CI/CD builds** by caching the Go module dependencies in a
+    separate layer.
+  - >-
+    2.  **Reduce the final image size** by creating a statically-linked,
+    stripped binary.
+  - >-
+    3.  **Enhance security** by using a minimal `alpine` base image for the
+    final stage and running the application as a non-root user with correct file
+    permissions.
+  - Here is the updated Dockerfile for the `whatsmeow` provider.
+operations:
+  - type: write
+    path: providers/whatsmeow/Dockerfile
+    content: |-
+      # --- Build Stage ---
+      # Use an official Go image as the builder.
+      # Using alpine for a smaller builder image.
+      FROM golang:1.21-alpine AS builder
+
+      # Set the working directory inside the container
+      WORKDIR /src
+
+      # Copy go.mod and go.sum to leverage Docker's layer caching.
+      # This layer is only rebuilt when dependencies change.
+      COPY go.mod go.sum ./
+
+      # Download Go module dependencies
+      RUN go mod download
+
+      # Copy the rest of the source code into the container
+      COPY . .
+
+      # Build a statically-linked, stripped binary for a minimal final image.
+      # CGO_ENABLED=0 is for static linking.
+      # -ldflags='-s -w' strips debug symbols to reduce binary size.
+      RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /bin/app .
+
+      # --- Final Stage ---
+      # Use a minimal base image for the final container.
+      # alpine is a good choice for its small size.
+      FROM alpine:latest
+
+      # Add ca-certificates for making HTTPS calls (e.g., for webhooks).
+      RUN apk --no-cache add ca-certificates
+
+      # Create a non-root user and group for security.
+      RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+      # Create and set ownership for the session directory.
+      # This directory will be used for the VOLUME to persist session data.
+      RUN mkdir /session && chown appuser:appgroup /session
+
+      # Copy the compiled binary from the builder stage.
+      COPY --from=builder /bin/app /bin/app
+
+      # Switch to the non-root user.
+      USER appuser
+
+      # Expose the internal API port used by the Go application.
+      EXPOSE 8080
+
+      # Define a volume for session data persistence.
+      # This allows session data to be stored outside the container.
+      VOLUME /session
+
+      # Set the entrypoint to run the application.
+      ENTRYPOINT ["/bin/app"]
+    patchStrategy: replace
+snapshot:
+  providers/whatsmeow/Dockerfile: >-
+    # --- Build Stage ---
+
+    FROM golang:1.21-alpine AS builder
+
+
+    WORKDIR /app
+
+
+    # Copy go.mod and go.sum files
+
+    COPY go.mod ./
+
+    # If you have a go.sum, copy it too
+
+    # COPY go.sum ./
+
+
+    # Download dependencies
+
+    # This is a separate step to leverage Docker cache
+
+    RUN go mod download
+
+
+    # Copy the source code
+
+    COPY . .
+
+
+    # Build the Go app
+
+    # -ldflags="-w -s" strips debug information and symbols to reduce binary
+    size
+
+    # CGO_ENABLED=0 is important for a static binary for scratch image
+
+    RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /whatsapp-provider .
+
+
+    # --- Final Stage ---
+
+    FROM alpine:latest
+
+
+    # Create a directory for session data
+
+    RUN mkdir /session && chown 1000:1000 /session
+
+
+    # Create a non-root user
+
+    RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+    USER appuser
+
+
+    # Copy binary from builder
+
+    COPY --from=builder /whatsapp-provider /whatsapp-provider
+
+
+    # Expose the internal API port
+
+    EXPOSE 8080
+
+
+    # Define a volume for session data
+
+    VOLUME /session
+
+
+    # Command to run the application
+
+    CMD ["/whatsapp-provider"]
+approved: true
+linesAdded: 32
+linesRemoved: 22
+linesDifference: 54
+gitCommittedAt: null
+status: committed
+id: 2
