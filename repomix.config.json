@@ -26,7 +26,15 @@
   "ignore": {
     "useGitignore": true,
     "useDefaultPatterns": true,
-    "customPatterns": [".gitignore", ".repomixignore", ".relay"]
+    "customPatterns": [
+      ".gitignore",
+      ".repomixignore",
+      ".relay",
+      "docs",
+      ".nocaflow",
+      "repomix.config.json",
+      "relay.config.json"
+    ]
   },
   "security": {
     "enableSecurityCheck": true
