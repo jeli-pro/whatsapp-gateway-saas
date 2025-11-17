@@ -1,53 +1,86 @@
-# --- Build Stage ---
-# Use an official Go image as the builder.
-# Using alpine for a smaller builder image.
-FROM golang:1.21-alpine AS builder
+# Multi-stage build for optimal image size and security
+# Build stage - compiles the Go binary
+FROM golang:1.23-alpine AS builder
 
-# Set the working directory inside the container
+# Install build dependencies for CGO (required for SQLite3)
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+
+# Set working directory
 WORKDIR /src
 
-# Copy go.mod and go.sum to leverage Docker's layer caching.
-# This layer is only rebuilt when dependencies change.
-COPY go.mod go.sum ./
+# Copy go mod file first for better layer caching
+COPY go.mod ./
 
-# Download Go module dependencies
+# Download dependencies - this layer only rebuilds when go.mod changes
 RUN go mod download
 
-# Copy the rest of the source code into the container
+# Copy source code
 COPY . .
 
-# Build a statically-linked, stripped binary for a minimal final image.
-# CGO_ENABLED=0 is for static linking.
-# -ldflags='-s -w' strips debug symbols to reduce binary size.
-RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /bin/app .
+# Generate go.sum and tidy dependencies
+RUN go mod tidy
 
-# --- Final Stage ---
-# Use a minimal base image for the final container.
-# alpine is a good choice for its small size.
-FROM alpine:latest
+# Build arguments for versioning and optimization
+ARG VERSION=dev
+ARG BUILD_TIME
 
-# Add ca-certificates for making HTTPS calls (e.g., for webhooks).
-RUN apk --no-cache add ca-certificates
+# Build the application with optimizations
+# - CGO_ENABLED=1 required for SQLite3 support
+# - -ldflags strips debug symbols and sets build info
+# - -trimpath removes file system paths from binary
+RUN CGO_ENABLED=1 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    go build \
+    -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+    -o /bin/whatsapp-gateway \
+    .
 
-# Create a non-root user and group for security.
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Final runtime stage - minimal secure image
+FROM alpine:3.20
 
-# Create and set ownership for the session directory.
-# This directory will be used for the VOLUME to persist session data.
-RUN mkdir /session && chown appuser:appgroup /session
+# Install runtime dependencies
+RUN apk --no-cache add \
+    ca-certificates \
+    tzdata \
+    wget \
+    sqlite \
+    && rm -rf /var/cache/apk/*
 
-# Copy the compiled binary from the builder stage.
-COPY --from=builder /bin/app /bin/app
+# Create non-root user and group for security
+RUN addgroup -S -g 1001 appgroup && \
+    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G appgroup appuser
 
-# Switch to the non-root user.
+# Create directories with proper permissions
+RUN mkdir -p /app/session /app/logs && \
+    chown -R appuser:appgroup /app
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /bin/whatsapp-gateway /usr/local/bin/whatsapp-gateway
+
+# Ensure binary is executable
+RUN chmod +x /usr/local/bin/whatsapp-gateway
+
+# Switch to non-root user
 USER appuser
 
-# Expose the internal API port used by the Go application.
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Expose application port
 EXPOSE 8080
 
-# Define a volume for session data persistence.
-# This allows session data to be stored outside the container.
-VOLUME /session
+# Define persistent volumes
+VOLUME ["/app/session"]
 
-# Set the entrypoint to run the application.
-ENTRYPOINT ["/bin/app"]
+# Set environment variables
+ENV PORT=8080
+ENV GOMAXPROCS=1
+
+# Container entrypoint
+ENTRYPOINT ["whatsapp-gateway"]

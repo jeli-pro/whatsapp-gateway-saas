@@ -1,0 +1,86 @@
+version: '3.9'
+
+services:
+  whatsmeow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_TIME: ${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+    image: whatsapp-gateway-whatsmeow:${VERSION:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-whatsmeow}-instance
+    restart: unless-stopped
+
+    # Resource limits for cost control and fair usage
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPU_LIMIT:-0.5}
+          memory: ${MEMORY_LIMIT:-512M}
+        reservations:
+          cpus: ${CPU_RESERVATION:-0.1}
+          memory: ${MEMORY_RESERVATION:-128M}
+
+    # Port mapping for API access
+    ports:
+      - "${PORT:-8080}:8080"
+
+    # Environment variables
+    environment:
+      - PORT=8080
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GOMAXPROCS=1
+
+    # Volume for session persistence
+    volumes:
+      - whatsmeow-session:/app/session
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+
+    # Network configuration
+    networks:
+      - whatsmeow-network
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Labels for orchestration and monitoring
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whatsmeow.rule=Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.services.whatsmeow.loadbalancer.server.port=8080"
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-whatsmeow}"
+      - "version=${VERSION:-dev}"
+
+# Named volumes for data persistence
+volumes:
+  whatsmeow-session:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${SESSION_VOLUME_PATH:-./data/session}
+
+# Network configuration
+networks:
+  whatsmeow-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

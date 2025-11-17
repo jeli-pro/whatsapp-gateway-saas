@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -24,9 +26,10 @@ import (
 )
 
 var client *whatsmeow.Client
-var log waLog.Logger
+var waLogger waLog.Logger
 var qrCodeStr string
 var qrCodeMutex sync.RWMutex
+var startTime = time.Now()
 
 type webhookPayload struct {
 	Event string      `json:"event"`
@@ -42,13 +45,13 @@ func eventHandler(evt interface{}) {
 	var payload webhookPayload
 	switch v := evt.(type) {
 	case *events.Message:
-		log.Infof("Received message from %s: %s", v.Info.Sender, v.Message.GetConversation())
+		waLogger.Infof("Received message from %s: %s", v.Info.Sender, v.Message.GetConversation())
 		payload = webhookPayload{Event: "message", Data: v}
 	case *events.Connected:
-		log.Infof("Connected to WhatsApp")
+		waLogger.Infof("Connected to WhatsApp")
 		payload = webhookPayload{Event: "connected", Data: nil}
 	case *events.Disconnected:
-		log.Infof("Disconnected from WhatsApp")
+		waLogger.Infof("Disconnected from WhatsApp")
 		payload = webhookPayload{Event: "disconnected", Data: nil}
 	default:
 		return // Ignore other events for now
@@ -60,13 +63,13 @@ func eventHandler(evt interface{}) {
 func sendWebhook(url string, payload webhookPayload) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Errorf("Failed to marshal webhook payload: %v", err)
+		waLogger.Errorf("Failed to marshal webhook payload: %v", err)
 		return
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
-		log.Errorf("Failed to create webhook request: %v", err)
+		waLogger.Errorf("Failed to create webhook request: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -74,13 +77,13 @@ func sendWebhook(url string, payload webhookPayload) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Errorf("Failed to send webhook: %v", err)
+		waLogger.Errorf("Failed to send webhook: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		log.Warnf("Webhook call failed with status: %s", resp.Status)
+		waLogger.Warnf("Webhook call failed with status: %s", resp.Status)
 	}
 }
 
@@ -88,12 +91,18 @@ func getQR(w http.ResponseWriter, r *http.Request) {
 	qrCodeMutex.RLock()
 	defer qrCodeMutex.RUnlock()
 	if qrCodeStr == "" {
-		http.Error(w, "QR code not available", http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, `{"status": "no_qr", "message": "QR code not available"}`, http.StatusNotFound)
 		return
 	}
-	// For simplicity, returning the string. The gateway could convert this to an image.
-	w.Header().Set("Content-Type", "text/plain")
-	fmt.Fprint(w, qrCodeStr)
+	// Return QR code as PNG image for better compatibility
+	w.Header().Set("Content-Type", "image/png")
+	png, err := qrcode.Encode(qrCodeStr, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
+		return
+	}
+	w.Write(png)
 }
 
 type sendMessageRequest struct {
@@ -110,10 +119,10 @@ func parseJID(arg string) (types.JID, bool) {
 	}
 	recipient, err := types.ParseJID(arg)
 	if err != nil {
-		log.Errorf("Invalid JID %s: %v", arg, err)
+		waLogger.Errorf("Invalid JID %s: %v", arg, err)
 		return recipient, false
 	} else if recipient.User == "" {
-		log.Errorf("Invalid JID %s: no user specified", arg)
+		waLogger.Errorf("Invalid JID %s: no user specified", arg)
 		return recipient, false
 	}
 	return recipient, true
@@ -137,45 +146,69 @@ func sendText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg := &types.Message{
+	msg := &waE2E.Message{
 		Conversation: proto.String(reqBody.Text),
 	}
 
 	ts, err := client.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
-		log.Errorf("Error sending message: %v", err)
+		waLogger.Errorf("Error sending message: %v", err)
 		http.Error(w, "Failed to send message", http.StatusInternalServerError)
 		return
 	}
 
-	log.Infof("Message sent to %s (ID: %s, Timestamp: %s)", recipient.String(), ts.ID, ts.Timestamp)
+	waLogger.Infof("Message sent to %s (ID: %s, Timestamp: %s)", recipient.String(), ts.ID, ts.Timestamp)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "id": ts.ID})
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	connected := client != nil && client.IsConnected()
+	phoneID := ""
+	if client != nil && client.Store.ID != nil {
+		phoneID = client.Store.ID.String()
+	}
+
+	response := map[string]interface{}{
+		"status":      "healthy",
+		"connected":   connected,
+		"phone_id":    phoneID,
+		"uptime":      time.Since(startTime).String(),
+		"version":     "1.0.0",
+		"timestamp":   time.Now().Unix(),
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
 func startAPIServer() {
+	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/status", healthHandler) // Alias for health
 	http.HandleFunc("/qr", getQR)
 	http.HandleFunc("/send", sendText)
-	log.Infof("Starting internal API server on :8080")
+	waLogger.Infof("Starting internal API server on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("API server failed: %v", err)
 	}
 }
 
 func main() {
-	log = waLog.Stdout("main", "INFO", true)
+	waLogger = waLog.Stdout("main", "INFO", true)
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
-	container, err := sqlstore.New("sqlite3", "file:/session/whatsmeow.db?_foreign_keys=on", dbLog)
+	ctx := context.Background()
+	container, err := sqlstore.New(ctx, "sqlite3", "file:/session/whatsmeow.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		panic(err)
 	}
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(ctx)
 	if err != nil {
 		panic(err)
 	}
 
-	client = whatsmeow.NewClient(deviceStore, log)
+	client = whatsmeow.NewClient(deviceStore, waLogger)
 	client.AddEventHandler(eventHandler)
 
 	go startAPIServer()
@@ -195,7 +228,7 @@ func main() {
 				qr, _ := qrcode.New(evt.Code, qrcode.Medium)
 				fmt.Println("QR code:\n" + qr.ToString(true))
 			} else {
-				log.Infof("Login event: %s", evt.Event)
+				waLogger.Infof("Login event: %s", evt.Event)
 				if evt.Event == "success" {
 					qrCodeMutex.Lock()
 					qrCodeStr = "" // Clear QR code after login
