@@ -1,2 +1,15 @@
-# relay state
-#/.relay/
+# Dependencies
+node_modules
+.bun/
+
+# Drizzle
+drizzle/migrations/meta/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Build
+dist
+build

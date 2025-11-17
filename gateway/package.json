@@ -1,0 +1,21 @@
+{
+  "name": "gateway",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/dockerode": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "drizzle-orm": "latest",
+    "postgres": "latest",
+    "dockerode": "latest"
+  }
+}

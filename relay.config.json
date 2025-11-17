@@ -3,17 +3,17 @@
   "projectId": "whatsapp-gateway-saas",
   "core": {
     "logLevel": "info",
-    "enableNotifications": true,
-    "watchConfig": true
+    "enableNotifications": false,
+    "watchConfig": false
   },
   "watcher": {
     "clipboardPollInterval": 2000,
     "preferredStrategy": "auto"
   },
   "patch": {
-    "approvalMode": "auto",
+    "approvalMode": "manual",
     "approvalOnErrorCount": 0,
-    "linter": "bun tsc --noEmit",
+    "linter": "",
     "preCommand": "",
     "postCommand": "",
     "minFileChanges": 0

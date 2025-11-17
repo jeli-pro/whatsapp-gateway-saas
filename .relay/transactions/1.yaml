@@ -1,0 +1,654 @@
+uuid: a38b1f5d-d9f2-4321-996c-134914c67d3e
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T12:48:21.958Z'
+gitCommitMsg: >-
+  feat: Implement MVP for gateway and whatsmeow provider
+
+  This commit establishes the foundational structure of the WhatsApp Gateway
+  SaaS project.
+
+  - Sets up the root project with Bun workspaces, Drizzle ORM for database
+    migrations, and basic configuration.
+  - Implements the Gateway Controller using Elysia.js, providing a REST API
+    for managing instances. It integrates `dockerode` to manage the lifecycle
+    of provider containers.
+  - Creates the first provider, `whatsmeow`, as a containerized Go
+    application. It exposes an internal API for sending messages and getting QR
+    codes, and forwards events via webhooks.
+  - Defines the database schema for users and instances.
+promptSummary: >-
+  Create the initial project structure and implement the core gateway and
+  whatsmeow provider based on the plan.
+reasoning:
+  - >-
+    This response will implement the first three parts of the plan, establishing
+    the core infrastructure and the `whatsmeow` provider.
+  - '### Part 1: Project Scaffolding & Database Schema'
+  - >-
+    First, I'll set up the project structure by creating the necessary
+    configuration files at the root, including `package.json` for scripts and
+    dependencies, a `drizzle.config.ts` for database migrations, an example
+    environment file, and a `.gitignore`.
+  - >-
+    Then, I'll create the Drizzle ORM schema in `drizzle/schema.ts` to define
+    the `users` and `instances` tables, which are crucial for storing the
+    application's state.
+  - >-
+    Finally, I will initialize the Gateway Controller as a Bun project inside
+    the `gateway/` directory, creating its own `package.json`, a
+    `tsconfig.json`, and a basic `src/index.ts` file that will later be expanded
+    into the main API.
+  - '### Part 2: `whatsmeow` Provider Service'
+  - >-
+    Next, I'll build the `whatsmeow` provider. This is a standalone Go
+    application that connects to WhatsApp. I'll create its `go.mod` file to
+    manage dependencies, write the `main.go` application which includes an
+    internal HTTP API for the Gateway Controller to use, and finally, a
+    `Dockerfile` to containerize it. This service will handle QR code
+    generation, sending messages, and forwarding events to a webhook.
+  - '### Part 3: Gateway API & Container Management'
+  - >-
+    Finally, I'll implement the core logic in the Gateway Controller. This
+    involves creating a `docker.service.ts` to abstract Docker operations using
+    `dockerode`. Then, I'll build out the REST API in `gateway/src/index.ts` to
+    manage the lifecycle of `whatsmeow` containers. This API will handle
+    creating instances (which starts a container), deleting them, proxying
+    requests for QR codes, and sending messages.
+operations:
+  - type: write
+    path: package.json
+    content: |-
+      {
+        "name": "whatsapp-gateway-saas",
+        "version": "0.1.0",
+        "private": true,
+        "workspaces": [
+          "gateway"
+        ],
+        "scripts": {
+          "dev": "bun --cwd gateway run dev",
+          "db:generate": "drizzle-kit generate",
+          "db:migrate": "drizzle-kit migrate"
+        },
+        "devDependencies": {
+          "drizzle-kit": "latest",
+          "dotenv": "latest"
+        }
+      }
+    patchStrategy: replace
+  - type: write
+    path: .env.example
+    content: |-
+      DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+      API_SECRET="your-super-secret-api-key"
+    patchStrategy: replace
+  - type: write
+    path: .gitignore
+    content: |-
+      # Dependencies
+      node_modules
+      .bun/
+
+      # Drizzle
+      drizzle/migrations/meta/
+
+      # Env
+      .env
+      .env.*
+      !.env.example
+
+      # Build
+      dist
+      build
+    patchStrategy: replace
+  - type: write
+    path: drizzle.config.ts
+    content: |-
+      import { defineConfig } from 'drizzle-kit';
+      import 'dotenv/config';
+
+      if (!process.env.DATABASE_URL) {
+        throw new Error('DATABASE_URL environment variable is required');
+      }
+
+      export default defineConfig({
+        schema: './drizzle/schema.ts',
+        out: './drizzle/migrations',
+        dialect: 'postgresql',
+        dbCredentials: {
+          url: process.env.DATABASE_URL,
+        },
+        verbose: true,
+        strict: true,
+      });
+    patchStrategy: replace
+  - type: write
+    path: drizzle/schema.ts
+    content: >-
+      import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex,
+      pgEnum } from 'drizzle-orm/pg-core';
+
+      import { relations } from 'drizzle-orm';
+
+
+      export const users = pgTable('users', {
+        id: serial('id').primaryKey(),
+        email: varchar('email', { length: 256 }).notNull().unique(),
+        apiKey: text('api_key').notNull().unique(),
+        createdAt: timestamp('created_at').defaultNow().notNull(),
+      });
+
+
+      export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys',
+      'wawebjs', 'waba']);
+
+      export const instanceStatusEnum = pgEnum('status', ['creating',
+      'starting', 'running', 'stopped', 'error']);
+
+
+      export const instances = pgTable('instances', {
+          id: serial('id').primaryKey(),
+          userId: integer('user_id').notNull().references(() => users.id),
+          phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
+          provider: providerEnum('provider').notNull(),
+          webhookUrl: text('webhook_url'),
+          status: instanceStatusEnum('status').default('creating').notNull(),
+          cpuLimit: varchar('cpu_limit', { length: 10 }).default('0.5'), // e.g., "0.5"
+          memoryLimit: varchar('memory_limit', { length: 10 }).default('512m'), // e.g., "512m"
+          createdAt: timestamp('created_at').defaultNow().notNull(),
+        }, (table) => {
+          return {
+            userPhoneIdx: uniqueIndex('user_phone_idx').on(table.userId, table.phoneNumber),
+          };
+      });
+
+
+      export const userRelations = relations(users, ({ many }) => ({
+        instances: many(instances),
+      }));
+
+
+      export const instanceRelations = relations(instances, ({ one }) => ({
+        user: one(users, {
+          fields: [instances.userId],
+          references: [users.id],
+        }),
+      }));
+    patchStrategy: replace
+  - type: write
+    path: gateway/package.json
+    content: |-
+      {
+        "name": "gateway",
+        "module": "src/index.ts",
+        "type": "module",
+        "scripts": {
+          "dev": "bun --watch src/index.ts"
+        },
+        "devDependencies": {
+          "bun-types": "latest",
+          "@types/dockerode": "latest"
+        },
+        "peerDependencies": {
+          "typescript": "^5.0.0"
+        },
+        "dependencies": {
+          "elysia": "latest",
+          "drizzle-orm": "latest",
+          "postgres": "latest",
+          "dockerode": "latest"
+        }
+      }
+    patchStrategy: replace
+  - type: write
+    path: gateway/tsconfig.json
+    content: |-
+      {
+        "compilerOptions": {
+          "lib": ["ESNext"],
+          "module": "ESNext",
+          "target": "ESNext",
+          "moduleResolution": "bundler",
+          "moduleDetection": "force",
+          "allowImportingTsExtensions": true,
+          "noEmit": true,
+          "composite": true,
+          "strict": true,
+          "downlevelIteration": true,
+          "skipLibCheck": true,
+          "jsx": "react-jsx",
+          "allowSyntheticDefaultImports": true,
+          "forceConsistentCasingInFileNames": true,
+          "allowJs": true,
+          "types": [
+            "bun-types"
+          ]
+        }
+      }
+    patchStrategy: replace
+  - type: write
+    path: providers/whatsmeow/go.mod
+    content: "module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow\n\ngo 1.21\n\nrequire (\n\tgithub.com/mattn/go-sqlite3 v1.14.17\n\tgithub.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e\n\tgo.mau.fi/whatsmeow v0.0.0-20240123133441-a2223838128a\n\tgoogle.golang.org/protobuf v1.31.0\n)"
+    patchStrategy: replace
+  - type: write
+    path: providers/whatsmeow/main.go
+    content: "package main\n\nimport (\n\t\"bytes\"\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"sync\"\n\t\"syscall\"\n\t\"time\"\n\n\t_ \"github.com/mattn/go-sqlite3\"\n\t\"github.com/skip2/go-qrcode\"\n\t\"go.mau.fi/whatsmeow\"\n\t\"go.mau.fi/whatsmeow/store/sqlstore\"\n\t\"go.mau.fi/whatsmeow/types\"\n\t\"go.mau.fi/whatsmeow/types/events\"\n\twaLog \"go.mau.fi/whatsmeow/util/log\"\n\t\"google.golang.org/protobuf/proto\"\n)\n\nvar client *whatsmeow.Client\nvar log waLog.Logger\nvar qrCodeStr string\nvar qrCodeMutex sync.RWMutex\n\ntype webhookPayload struct {\n\tEvent string      `json:\"event\"`\n\tData  interface{} `json:\"data\"`\n}\n\nfunc eventHandler(evt interface{}) {\n\twebhookURL := os.Getenv(\"WEBHOOK_URL\")\n\tif webhookURL == \"\" {\n\t\treturn // No webhook configured\n\t}\n\n\tvar payload webhookPayload\n\tswitch v := evt.(type) {\n\tcase *events.Message:\n\t\tlog.Infof(\"Received message from %s: %s\", v.Info.Sender, v.Message.GetConversation())\n\t\tpayload = webhookPayload{Event: \"message\", Data: v}\n\tcase *events.Connected:\n\t\tlog.Infof(\"Connected to WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"connected\", Data: nil}\n\tcase *events.Disconnected:\n\t\tlog.Infof(\"Disconnected from WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"disconnected\", Data: nil}\n\tdefault:\n\t\treturn // Ignore other events for now\n\t}\n\n\tgo sendWebhook(webhookURL, payload)\n}\n\nfunc sendWebhook(url string, payload webhookPayload) {\n\tdata, err := json.Marshal(payload)\n\tif err != nil {\n\t\tlog.Errorf(\"Failed to marshal webhook payload: %v\", err)\n\t\treturn\n\t}\n\n\treq, err := http.NewRequest(\"POST\", url, bytes.NewBuffer(data))\n\tif err != nil {\n\t\tlog.Errorf(\"Failed to create webhook request: %v\", err)\n\t\treturn\n\t}\n\treq.Header.Set(\"Content-Type\", \"application/json\")\n\n\thttpClient := &http.Client{Timeout: 10 * time.Second}\n\tresp, err := httpClient.Do(req)\n\tif err != nil {\n\t\tlog.Errorf(\"Failed to send webhook: %v\", err)\n\t\treturn\n\t}\n\tdefer resp.Body.Close()\n\n\tif resp.StatusCode >= 300 {\n\t\tlog.Warnf(\"Webhook call failed with status: %s\", resp.Status)\n\t}\n}\n\nfunc getQR(w http.ResponseWriter, r *http.Request) {\n\tqrCodeMutex.RLock()\n\tdefer qrCodeMutex.RUnlock()\n\tif qrCodeStr == \"\" {\n\t\thttp.Error(w, \"QR code not available\", http.StatusNotFound)\n\t\treturn\n\t}\n\t// For simplicity, returning the string. The gateway could convert this to an image.\n\tw.Header().Set(\"Content-Type\", \"text/plain\")\n\tfmt.Fprint(w, qrCodeStr)\n}\n\ntype sendMessageRequest struct {\n\tTo   string `json:\"to\"`\n\tText string `json:\"text\"`\n}\n\nfunc parseJID(arg string) (types.JID, bool) {\n\tif arg[0] == '+' {\n\t\targ = arg[1:]\n\t}\n\tif !strings.ContainsRune(arg, '@') {\n\t\treturn types.NewJID(arg, types.DefaultUserServer), true\n\t}\n\trecipient, err := types.ParseJID(arg)\n\tif err != nil {\n\t\tlog.Errorf(\"Invalid JID %s: %v\", arg, err)\n\t\treturn recipient, false\n\t} else if recipient.User == \"\" {\n\t\tlog.Errorf(\"Invalid JID %s: no user specified\", arg)\n\t\treturn recipient, false\n\t}\n\treturn recipient, true\n}\n\nfunc sendText(w http.ResponseWriter, r *http.Request) {\n\tif client == nil || !client.IsConnected() {\n\t\thttp.Error(w, \"Client not connected\", http.StatusServiceUnavailable)\n\t\treturn\n\t}\n\n\tvar reqBody sendMessageRequest\n\tif err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {\n\t\thttp.Error(w, \"Invalid request body\", http.StatusBadRequest)\n\t\treturn\n\t}\n\n\trecipient, ok := parseJID(reqBody.To)\n\tif !ok {\n\t\thttp.Error(w, fmt.Sprintf(\"Invalid JID: %s\", reqBody.To), http.StatusBadRequest)\n\t\treturn\n\t}\n\n\tmsg := &types.Message{\n\t\tConversation: proto.String(reqBody.Text),\n\t}\n\n\tts, err := client.SendMessage(context.Background(), recipient, msg)\n\tif err != nil {\n\t\tlog.Errorf(\"Error sending message: %v\", err)\n\t\thttp.Error(w, \"Failed to send message\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\tlog.Infof(\"Message sent to %s (ID: %s, Timestamp: %s)\", recipient.String(), ts.ID, ts.Timestamp)\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]string{\"status\": \"ok\", \"id\": ts.ID})\n}\n\nfunc startAPIServer() {\n\thttp.HandleFunc(\"/qr\", getQR)\n\thttp.HandleFunc(\"/send\", sendText)\n\tlog.Infof(\"Starting internal API server on :8080\")\n\tif err := http.ListenAndServe(\":8080\", nil); err != nil {\n\t\tlog.Fatalf(\"API server failed: %v\", err)\n\t}\n}\n\nfunc main() {\n\tlog = waLog.Stdout(\"main\", \"INFO\", true)\n\tdbLog := waLog.Stdout(\"Database\", \"INFO\", true)\n\n\tcontainer, err := sqlstore.New(\"sqlite3\", \"file:/session/whatsmeow.db?_foreign_keys=on\", dbLog)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdeviceStore, err := container.GetFirstDevice()\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\tclient = whatsmeow.NewClient(deviceStore, log)\n\tclient.AddEventHandler(eventHandler)\n\n\tgo startAPIServer()\n\n\tif client.Store.ID == nil {\n\t\tqrChan, _ := client.GetQRChannel(context.Background())\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t\tfor evt := range qrChan {\n\t\t\tif evt.Event == \"code\" {\n\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\tqrCodeStr = evt.Code\n\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t// Also print to console for debugging\n\t\t\t\tqr, _ := qrcode.New(evt.Code, qrcode.Medium)\n\t\t\t\tfmt.Println(\"QR code:\\n\" + qr.ToString(true))\n\t\t\t} else {\n\t\t\t\tlog.Infof(\"Login event: %s\", evt.Event)\n\t\t\t\tif evt.Event == \"success\" {\n\t\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\t\tqrCodeStr = \"\" // Clear QR code after login\n\t\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t} else {\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t}\n\n\tc := make(chan os.Signal, 1)\n\tsignal.Notify(c, os.Interrupt, syscall.SIGTERM)\n\t<-c\n\n\tclient.Disconnect()\n}"
+    patchStrategy: replace
+  - type: write
+    path: providers/whatsmeow/Dockerfile
+    content: >-
+      # --- Build Stage ---
+
+      FROM golang:1.21-alpine AS builder
+
+
+      WORKDIR /app
+
+
+      # Copy go.mod and go.sum files
+
+      COPY go.mod ./
+
+      # If you have a go.sum, copy it too
+
+      # COPY go.sum ./
+
+
+      # Download dependencies
+
+      # This is a separate step to leverage Docker cache
+
+      RUN go mod download
+
+
+      # Copy the source code
+
+      COPY . .
+
+
+      # Build the Go app
+
+      # -ldflags="-w -s" strips debug information and symbols to reduce binary
+      size
+
+      # CGO_ENABLED=0 is important for a static binary for scratch image
+
+      RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /whatsapp-provider .
+
+
+      # --- Final Stage ---
+
+      FROM alpine:latest
+
+
+      # Create a directory for session data
+
+      RUN mkdir /session && chown 1000:1000 /session
+
+
+      # Create a non-root user
+
+      RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+      USER appuser
+
+
+      # Copy binary from builder
+
+      COPY --from=builder /whatsapp-provider /whatsapp-provider
+
+
+      # Expose the internal API port
+
+      EXPOSE 8080
+
+
+      # Define a volume for session data
+
+      VOLUME /session
+
+
+      # Command to run the application
+
+      CMD ["/whatsapp-provider"]
+    patchStrategy: replace
+  - type: write
+    path: gateway/src/docker.service.ts
+    content: >-
+      import Docker from 'dockerode';
+
+
+      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+
+      const DOCKER_IMAGE = 'whatsapp-gateway-saas-whatsmeow'; // Assume this is
+      built and tagged
+
+
+      interface CreateContainerOptions {
+          instanceId: number;
+          webhookUrl: string;
+          cpuLimit: string;
+          memoryLimit: string;
+      }
+
+
+      export async function createAndStartContainer(options:
+      CreateContainerOptions) {
+          const containerName = `instance-${options.instanceId}`;
+          console.log(`Creating container ${containerName}`);
+
+          // First, try to pull the image to ensure it's up to date
+          await pullImage(DOCKER_IMAGE);
+
+          const container = await docker.createContainer({
+              Image: DOCKER_IMAGE,
+              name: containerName,
+              Env: [
+                  `WEBHOOK_URL=${options.webhookUrl}`
+              ],
+              HostConfig: {
+                  // Restart unless manually stopped
+                  RestartPolicy: {
+                      Name: 'unless-stopped',
+                  },
+                  // Resource limits
+                  NanoCpus: Math.floor(parseFloat(options.cpuLimit) * 1e9), // e.g. 0.5 -> 500000000
+                  Memory: parseMemory(options.memoryLimit), // e.g. "512m" -> 536870912
+              },
+              Labels: {
+                  'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+              }
+          });
+
+          console.log(`Starting container ${container.id}`);
+          await container.start();
+
+          return container;
+      }
+
+
+      export async function stopAndRemoveContainer(instanceId: number) {
+          const containerName = `instance-${instanceId}`;
+          try {
+              const container = docker.getContainer(containerName);
+              const inspect = await container.inspect();
+              if (inspect.State.Running) {
+                  console.log(`Stopping container ${containerName}`);
+                  await container.stop();
+              }
+              console.log(`Removing container ${containerName}`);
+              await container.remove();
+              return true;
+          } catch (error: any) {
+              if (error.statusCode === 404) {
+                  console.log(`Container ${containerName} not found, nothing to do.`);
+                  return true;
+              }
+              console.error(`Error stopping/removing container ${containerName}:`, error);
+              throw error;
+          }
+      }
+
+
+      export async function findContainer(instanceId: number) {
+          try {
+              const container = docker.getContainer(`instance-${instanceId}`);
+              return await container.inspect();
+          } catch (error: any) {
+              if (error.statusCode === 404) {
+                  return null;
+              }
+              throw error;
+          }
+      }
+
+
+      function pullImage(imageName: string): Promise<void> {
+          return new Promise((resolve, reject) => {
+              console.log(`Pulling image ${imageName}...`);
+              docker.pull(imageName, (err: Error, stream: NodeJS.ReadableStream) => {
+                  if (err) {
+                      return reject(err);
+                  }
+                  docker.modem.followProgress(stream, onFinished, onProgress);
+
+                  function onFinished(err: Error | null, output: any) {
+                      if (err) {
+                          return reject(err);
+                      }
+                      console.log(`Image ${imageName} pulled successfully.`);
+                      resolve();
+                  }
+                  function onProgress(event: any) {
+                      // You can add progress reporting here if needed
+                  }
+              });
+          });
+      }
+
+
+      function parseMemory(mem: string): number {
+          const unit = mem.charAt(mem.length - 1).toLowerCase();
+          const value = parseInt(mem.slice(0, -1), 10);
+          switch (unit) {
+              case 'g': return value * 1024 * 1024 * 1024;
+              case 'm': return value * 1024 * 1024;
+              case 'k': return value * 1024;
+              default: return parseInt(mem, 10);
+          }
+      }
+    patchStrategy: replace
+  - type: write
+    path: gateway/src/index.ts
+    content: >-
+      import { Elysia, t } from 'elysia';
+
+      import { drizzle } from 'drizzle-orm/postgres-js';
+
+      import { eq } from 'drizzle-orm';
+
+      import postgres from 'postgres';
+
+      import * as schema from '../../drizzle/schema';
+
+      import { createAndStartContainer, findContainer, stopAndRemoveContainer }
+      from './docker.service';
+
+
+      const connectionString = process.env.DATABASE_URL;
+
+      if (!connectionString) {
+        throw new Error("DATABASE_URL is not set");
+      }
+
+
+      const client = postgres(connectionString);
+
+      const db = drizzle(client, { schema });
+
+
+      const API_SECRET = process.env.API_SECRET;
+
+      if (!API_SECRET) {
+        throw new Error("API_SECRET is not set");
+      }
+
+
+      // A simple proxy to fetch data from a container
+
+      async function proxyToContainer(containerIp: string, path: string,
+      options?: RequestInit) {
+          const url = `http://${containerIp}:8080${path}`;
+          try {
+              const response = await fetch(url, options);
+              return response;
+          } catch (e) {
+              console.error(`Failed to proxy request to ${url}`, e);
+              return null;
+          }
+      }
+
+
+
+      const app = new Elysia()
+        .get('/', () => ({ status: 'ok' }))
+        .group('/api', (app) => app
+          // Simple bearer token auth
+          .onBeforeHandle(({ headers, set }) => {
+              const auth = headers['authorization'];
+              if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !== API_SECRET) {
+                  set.status = 401;
+                  return { error: 'Unauthorized' };
+              }
+          })
+          .post('/instances', async ({ body, set }) => {
+              // TODO: Tie to an authenticated user
+              // For now, assuming user with ID 1 exists and is the only user.
+              const [newInstance] = await db.insert(schema.instances).values({
+                  userId: 1, 
+                  phoneNumber: body.phone,
+                  provider: body.provider,
+                  webhookUrl: body.webhook,
+                  cpuLimit: body.resources?.cpu,
+                  memoryLimit: body.resources?.memory,
+                  status: 'creating',
+              }).returning();
+
+              if (!newInstance) {
+                  set.status = 500;
+                  return { error: 'Failed to create instance in database' };
+              }
+
+              try {
+                  await createAndStartContainer({
+                      instanceId: newInstance.id,
+                      webhookUrl: newInstance.webhookUrl || '',
+                      cpuLimit: newInstance.cpuLimit || '0.5',
+                      memoryLimit: newInstance.memoryLimit || '512m',
+                  });
+                  const [updatedInstance] = await db.update(schema.instances)
+                      .set({ status: 'running' })
+                      .where(eq(schema.instances.id, newInstance.id))
+                      .returning();
+                  return updatedInstance;
+              } catch (error) {
+                  console.error('Failed to start container:', error);
+                  await db.update(schema.instances)
+                      .set({ status: 'error' })
+                      .where(eq(schema.instances.id, newInstance.id));
+                  set.status = 500;
+                  return { error: 'Failed to start container for instance' };
+              }
+          }, {
+              body: t.Object({
+                  phone: t.String(),
+                  provider: t.Enum(schema.providerEnum),
+                  webhook: t.Optional(t.String()),
+                  resources: t.Optional(t.Object({
+                      cpu: t.String(),
+                      memory: t.String(),
+                  }))
+              })
+          })
+          .get('/instances/:id/qr', async ({ params, set }) => {
+              const instanceId = parseInt(params.id, 10);
+              const containerInfo = await findContainer(instanceId);
+
+              if (!containerInfo || !containerInfo.State.Running) {
+                  set.status = 404;
+                  return { error: 'Instance container not found or not running' };
+              }
+              
+              const ip = containerInfo.NetworkSettings.IPAddress;
+              if (!ip) {
+                   set.status = 500;
+                   return { error: "Could not determine container IP address." };
+              }
+
+              const qrResponse = await proxyToContainer(ip, '/qr');
+              if (!qrResponse) {
+                  set.status = 503;
+                  return { error: "Failed to connect to instance container." };
+              }
+              if (!qrResponse.ok) {
+                  set.status = qrResponse.status;
+                  return { error: `Instance returned an error: ${qrResponse.statusText}`};
+              }
+              
+              return { qr: await qrResponse.text() };
+          })
+          .post('/instances/:id/send', async ({ params, body, set }) => {
+              const instanceId = parseInt(params.id, 10);
+              const containerInfo = await findContainer(instanceId);
+
+              if (!containerInfo || !containerInfo.State.Running) {
+                  set.status = 404;
+                  return { error: 'Instance container not found or not running' };
+              }
+              const ip = containerInfo.NetworkSettings.IPAddress;
+              if (!ip) {
+                   set.status = 500;
+                   return { error: "Could not determine container IP address." };
+              }
+
+              const sendResponse = await proxyToContainer(ip, '/send', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body)
+              });
+
+              if (!sendResponse) {
+                  set.status = 503;
+                  return { error: "Failed to connect to instance container." };
+              }
+              set.status = sendResponse.status;
+              return await sendResponse.json();
+          }, {
+              body: t.Object({
+                  to: t.String(),
+                  text: t.String(),
+              })
+          })
+          .delete('/instances/:id', async ({ params, set }) => {
+              const instanceId = parseInt(params.id, 10);
+
+              try {
+                  await stopAndRemoveContainer(instanceId);
+                  await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                  set.status = 204;
+              } catch (error) {
+                  console.error('Failed to delete instance:', error);
+                  set.status = 500;
+                  return { error: 'Failed to delete instance' };
+              }
+          })
+        )
+        .listen(3000);
+
+      console.log(
+        `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+      );
+    patchStrategy: replace
+snapshot:
+  package.json: null
+  .env.example: null
+  drizzle.config.ts: null
+  drizzle/schema.ts: null
+  gateway/package.json: null
+  gateway/tsconfig.json: null
+  providers/whatsmeow/go.mod: null
+  providers/whatsmeow/main.go: null
+  providers/whatsmeow/Dockerfile: null
+  gateway/src/docker.service.ts: null
+  gateway/src/index.ts: null
+  .gitignore: |
+    # relay state
+    #/.relay/
+approved: true
+linesAdded: 687
+linesRemoved: 2
+linesDifference: 689
+gitCommittedAt: null
+status: committed
+id: 1

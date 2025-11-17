@@ -1,0 +1,72 @@
+plan:
+  id: "refactor-whatsmeow-dockerfile-prod"
+  status: "todo"
+  title: "Refactor `whatsmeow` Provider Dockerfile for Production & CI/CD"
+  introduction: |
+    Alright, time to productionize the `whatsmeow` provider. The initial Dockerfile from the MVP plan got us off the ground, but it's not ready for prime time. We need to optimize for fast, automated builds in a CI/CD environment and lock down the final image for security.
+
+    This plan addresses the user's request for a more robust build process. We'll implement a best-practice, multi-stage Dockerfile for the Go application. The key goals are maximizing Docker's layer caching to speed up builds, minimizing the final image size, and running the container as a non-root user. This gets us an efficient, secure, and pipeline-ready service.
+  parts:
+    - id: "d5e6f7g8-dockerfile-refactor"
+      status: "todo"
+      isolation: false
+      agent_id: "docker-go-swarm"
+      depends_on: ["whatsapp-gateway-mvp-1"] # This plan requires the initial whatsmeow service to exist.
+      name: "Part 1: Implement Best-Practice Multi-Stage Dockerfile"
+      reason: |
+        A naive Dockerfile rebuilds everything on every code change, is bloated with build tools, and often runs as root. That's slow and insecure. We're fixing that by separating the build environment from the runtime environment and being smart about how we copy files to leverage build caching.
+      steps:
+        - id: "s1-optimize-deps"
+          status: "todo"
+          name: "1. Optimize Go Dependency Caching"
+          reason: |
+            To avoid re-downloading all Go modules every time we change a single line of code. This is the single biggest win for build speed in a CI pipeline. We'll create a dedicated layer for dependencies that only gets rebuilt when `go.mod` or `go.sum` changes.
+          files:
+            - "providers/whatsmeow/Dockerfile"
+          operations:
+            - "Start the build stage using an official `golang` image (e.g., `FROM golang:1.21-alpine as builder`)."
+            - "Set the working directory, e.g., `WORKDIR /src`."
+            - "First, copy *only* `go.mod` and `go.sum` into the builder stage: `COPY go.mod go.sum ./`."
+            - "Run `go mod download` to fetch dependencies. This caches them in their own Docker layer."
+            - "After the dependency layer is set, copy the rest of the source code: `COPY . .`."
+        - id: "s2-static-build"
+          status: "todo"
+          name: "2. Build a Statically-Linked, Stripped Binary"
+          reason: |
+            A static binary has zero runtime dependencies. This allows us to use a minimal final image like `scratch` or `alpine` that doesn't even have standard C libraries. Stripping debug symbols makes the binary smaller.
+          files:
+            - "providers/whatsmeow/Dockerfile"
+          operations:
+            - "Within the `builder` stage, compile the application."
+            - "Use build flags to create a static, production-ready binary: `RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /bin/app .`."
+            - "`CGO_ENABLED=0` ensures static linking."
+            - "`-ldflags='-s -w'` strips debugging symbols and information, shrinking the binary size."
+        - id: "s3-minimal-image"
+          status: "todo"
+          name: "3. Construct Secure, Minimal Final Image"
+          reason: |
+            The final image shipped to production should contain *only* our compiled application and nothing else—no shell, no source code, no build tools. This drastically reduces the attack surface and image size. We'll also create a dedicated user to avoid running as root.
+          files:
+            - "providers/whatsmeow/Dockerfile"
+          operations:
+            - "Start a new, final stage from a minimal base image like `FROM alpine:latest`."
+            - "Add `ca-certificates` for making TLS connections, if necessary: `RUN apk --no-cache add ca-certificates`."
+            - "Create a non-root user and group to run the application: `RUN addgroup -S appgroup && adduser -S appuser -G appgroup`."
+            - "Copy the compiled binary from the `builder` stage: `COPY --from=builder /bin/app /bin/app`."
+            - "Switch to the non-root user: `USER appuser`."
+            - 'Define the container''s entrypoint to run the app: `ENTRYPOINT ["/bin/app"]`.'
+  conclusion: |
+    With this refactor, the `whatsmeow` provider is now built for speed and security. The resulting Docker image will be tiny, and CI/CD builds will be significantly faster thanks to proper layer caching. This pattern fulfills all the user's requirements for an automated, efficient, and secure build pipeline, setting a strong standard for any other providers we add to the system. Ship it.
+  context_files:
+    compact:
+      - README.md
+      - providers/whatsmeow/Dockerfile # The target file for refactoring
+    medium:
+      - README.md
+      - providers/whatsmeow/Dockerfile
+      - providers/whatsmeow/main.go # To understand what's being built
+    extended:
+      - README.md
+      - providers/whatsmeow/Dockerfile
+      - providers/whatsmeow/main.go
+      - providers/whatsmeow/go.mod

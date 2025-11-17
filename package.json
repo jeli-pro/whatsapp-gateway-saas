@@ -1,0 +1,17 @@
+{
+  "name": "whatsapp-gateway-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "gateway"
+  ],
+  "scripts": {
+    "dev": "bun --cwd gateway run dev",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "drizzle-kit": "latest",
+    "dotenv": "latest"
+  }
+}
