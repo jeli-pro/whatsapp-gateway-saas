@@ -1,8 +1,12 @@
-===
+=== DOING
+
+based on current providers/whatsmeow setup, is it already met readme.md requirements and strategies?
+
+=== DONE
 
 would you push build image to docker hub, already logged in. so that on every run the app prioritize pulling than building. but do not delete building , just last priority
 
-=== DOING
+=== DONE
 
 understand readme.md , then clone https://github.com/tulir/whatsmeow.git to providers/whatsmeow/src , then understand the repo to make perfect providers/whatsmeow/Dockerfile and docker compose by iterating until you can access health and status from container.
 
