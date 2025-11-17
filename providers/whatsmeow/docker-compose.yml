@@ -2,14 +2,16 @@ version: '3.9'
 
 services:
   whatsmeow:
+    # Image priority: Pull from Docker Hub first, build locally as fallback
+    image: jelipro/whatsapp-gateway-whatsmeow:${VERSION:-latest}
+    # Build configuration (used when image pull fails or --build flag is used)
     build:
       context: .
       dockerfile: Dockerfile
       args:
         VERSION: ${VERSION:-dev}
         BUILD_TIME: ${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-    image: whatsapp-gateway-whatsmeow:${VERSION:-latest}
-    container_name: ${COMPOSE_PROJECT_NAME:-whatsmeow}-instance
+    container_name: ${COMPOSE_PROJECT_NAME:-whatsmeow}-hub-instance
     restart: unless-stopped
 
     # Resource limits for cost control and fair usage
