@@ -1,6 +1,6 @@
 # Multi-stage build for optimal image size and security
 # Build stage - compiles the Go binary
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies for CGO (required for SQLite3)
 RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
@@ -54,7 +54,8 @@ RUN addgroup -S -g 1001 appgroup && \
 
 # Create directories with proper permissions
 RUN mkdir -p /app/session /app/logs && \
-    chown -R appuser:appgroup /app
+    chown -R appuser:appgroup /app && \
+    chmod 755 /app/session
 
 # Set working directory
 WORKDIR /app

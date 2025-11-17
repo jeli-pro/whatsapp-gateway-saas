@@ -199,7 +199,7 @@ func main() {
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite3", "file:/session/whatsmeow.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite3", "file:/app/session/whatsmeow.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		panic(err)
 	}
