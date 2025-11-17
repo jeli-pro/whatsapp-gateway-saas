@@ -1,0 +1,433 @@
+uuid: 4a259972-e1d8-4f05-8e27-6f68e0d65b16
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T14:39:43.020Z'
+gitCommitMsg: >-
+  feat(gateway): Implement dynamic provider image selection
+
+  Refactored the Docker service to dynamically select the container image based
+  on the 'provider' specified in the API request. This removes the hardcoded
+  'whatsmeow' image and lays the groundwork for supporting multiple provider
+  types as outlined in the project README.
+
+  - Replaced the `DOCKER_IMAGE` constant with a `getImageForProvider` function.
+  - Updated `CreateContainerOptions` to include the provider. - Modified the
+  instance creation endpoint to pass the provider to the container creation
+  service.
+promptSummary: Execute Part 1 of the plan to make provider image selection dynamic.
+reasoning:
+  - Executing Part 1 of the plan to enable dynamic provider image selection.
+  - '### Step 1: Abstract Provider-to-Image Mapping'
+  - >-
+    First, I'll modify `gateway/src/docker.service.ts` to remove the hardcoded
+    Docker image name. I'll replace it with a function that maps a provider
+    string (e.g., "whatsmeow") to its corresponding Docker image. I'll also
+    update the `CreateContainerOptions` interface to accept a provider and use
+    this new function within `createAndStartContainer`.
+  - '### Step 2: Update Container Creation Logic'
+  - >-
+    Next, I'll update `gateway/src/index.ts`. In the `/instances` creation
+    endpoint, I'll pass the provider from the request body to the
+    `createAndStartContainer` function, completing the dynamic link.
+  - >-
+    These changes make the gateway capable of launching different provider
+    containers based on the API request, fulfilling the requirements of Part 1.
+operations:
+  - type: write
+    path: gateway/src/docker.service.ts
+    content: >+
+      --- gateway/src/docker.service.ts
+
+      +++ gateway/src/docker.service.ts
+
+      @@ -1,22 +1,33 @@
+       import Docker from 'dockerode';
+       
+       const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      -
+
+      -const DOCKER_IMAGE = 'whatsapp-gateway-saas-whatsmeow'; // Assume this is
+      built and tagged
+
+      + 
+
+      +function getImageForProvider(provider: string): string {
+
+      +    // In a real scenario, this could come from a config file or database
+
+      +    const imageMap: Record<string, string> = {
+
+      +        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+
+      +        // 'baileys': 'some-other-image:latest',
+
+      +    };
+
+      +    const image = imageMap[provider];
+
+      +    if (!image) {
+
+      +        throw new Error(`Unsupported provider: ${provider}`);
+
+      +    }
+
+      +    return image;
+
+      +}
+       
+       interface CreateContainerOptions {
+           instanceId: number;
+           webhookUrl: string;
+           cpuLimit: string;
+           memoryLimit: string;
+      +    provider: string;
+       }
+       
+       export async function createAndStartContainer(options: CreateContainerOptions) {
+           const containerName = `instance-${options.instanceId}`;
+           console.log(`Creating container ${containerName}`);
+       
+      +    const DOCKER_IMAGE = getImageForProvider(options.provider);
+           // First, try to pull the image to ensure it's up to date
+           await pullImage(DOCKER_IMAGE);
+       
+           const container = await docker.createContainer({
+               Image: DOCKER_IMAGE,
+               name: containerName,
+               Env: [
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/src/index.ts
+    content: |+
+      --- gateway/src/index.ts
+      +++ gateway/src/index.ts
+      @@ -75,6 +75,7 @@
+                       webhookUrl: newInstance.webhookUrl || '',
+                       cpuLimit: newInstance.cpuLimit || '0.5',
+                       memoryLimit: newInstance.memoryLimit || '512m',
+      +                provider: newInstance.provider,
+                   });
+                   const [updatedInstance] = await db.update(schema.instances)
+                       .set({ status: 'running' })
+
+    patchStrategy: standard-diff
+snapshot:
+  gateway/src/docker.service.ts: >-
+    import Docker from 'dockerode';
+
+
+    const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+
+    const DOCKER_IMAGE = 'whatsapp-gateway-saas-whatsmeow'; // Assume this is
+    built and tagged
+
+
+    interface CreateContainerOptions {
+        instanceId: number;
+        webhookUrl: string;
+        cpuLimit: string;
+        memoryLimit: string;
+    }
+
+
+    export async function createAndStartContainer(options:
+    CreateContainerOptions) {
+        const containerName = `instance-${options.instanceId}`;
+        console.log(`Creating container ${containerName}`);
+
+        // First, try to pull the image to ensure it's up to date
+        await pullImage(DOCKER_IMAGE);
+
+        const container = await docker.createContainer({
+            Image: DOCKER_IMAGE,
+            name: containerName,
+            Env: [
+                `WEBHOOK_URL=${options.webhookUrl}`
+            ],
+            HostConfig: {
+                // Restart unless manually stopped
+                RestartPolicy: {
+                    Name: 'unless-stopped',
+                },
+                // Resource limits
+                NanoCpus: Math.floor(parseFloat(options.cpuLimit) * 1e9), // e.g. 0.5 -> 500000000
+                Memory: parseMemory(options.memoryLimit), // e.g. "512m" -> 536870912
+            },
+            Labels: {
+                'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+            }
+        });
+
+        console.log(`Starting container ${container.id}`);
+        await container.start();
+
+        return container;
+    }
+
+
+    export async function stopAndRemoveContainer(instanceId: number) {
+        const containerName = `instance-${instanceId}`;
+        try {
+            const container = docker.getContainer(containerName);
+            const inspect = await container.inspect();
+            if (inspect.State.Running) {
+                console.log(`Stopping container ${containerName}`);
+                await container.stop();
+            }
+            console.log(`Removing container ${containerName}`);
+            await container.remove();
+            return true;
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                console.log(`Container ${containerName} not found, nothing to do.`);
+                return true;
+            }
+            console.error(`Error stopping/removing container ${containerName}:`, error);
+            throw error;
+        }
+    }
+
+
+    export async function findContainer(instanceId: number) {
+        try {
+            const container = docker.getContainer(`instance-${instanceId}`);
+            return await container.inspect();
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                return null;
+            }
+            throw error;
+        }
+    }
+
+
+    function pullImage(imageName: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            console.log(`Pulling image ${imageName}...`);
+            docker.pull(imageName, (err: Error, stream: NodeJS.ReadableStream) => {
+                if (err) {
+                    return reject(err);
+                }
+                docker.modem.followProgress(stream, onFinished, onProgress);
+
+                function onFinished(err: Error | null, output: any) {
+                    if (err) {
+                        return reject(err);
+                    }
+                    console.log(`Image ${imageName} pulled successfully.`);
+                    resolve();
+                }
+                function onProgress(event: any) {
+                    // You can add progress reporting here if needed
+                }
+            });
+        });
+    }
+
+
+    function parseMemory(mem: string): number {
+        const unit = mem.charAt(mem.length - 1).toLowerCase();
+        const value = parseInt(mem.slice(0, -1), 10);
+        switch (unit) {
+            case 'g': return value * 1024 * 1024 * 1024;
+            case 'm': return value * 1024 * 1024;
+            case 'k': return value * 1024;
+            default: return parseInt(mem, 10);
+        }
+    }
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, findContainer, stopAndRemoveContainer }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    const API_SECRET = process.env.API_SECRET;
+
+    if (!API_SECRET) {
+      throw new Error("API_SECRET is not set");
+    }
+
+
+    // A simple proxy to fetch data from a container
+
+    async function proxyToContainer(containerIp: string, path: string, options?:
+    RequestInit) {
+        const url = `http://${containerIp}:8080${path}`;
+        try {
+            const response = await fetch(url, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${url}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Simple bearer token auth
+        .onBeforeHandle(({ headers, set }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !== API_SECRET) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set }) => {
+            // TODO: Tie to an authenticated user
+            // For now, assuming user with ID 1 exists and is the only user.
+            const [newInstance] = await db.insert(schema.instances).values({
+                userId: 1, 
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                phone: t.String(),
+                provider: t.Enum(schema.providerEnum),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set }) => {
+            const instanceId = parseInt(params.id, 10);
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const qrResponse = await proxyToContainer(ip, '/qr');
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            }
+            
+            return { qr: await qrResponse.text() };
+        })
+        .post('/instances/:id/send', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.id, 10);
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const sendResponse = await proxyToContainer(ip, '/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            try {
+                await stopAndRemoveContainer(instanceId);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+      )
+      .listen(3000);
+
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+approved: true
+linesAdded: 16
+linesRemoved: 2
+linesDifference: 18
+gitCommittedAt: null
+status: committed
+id: 3

@@ -1,27 +1,46 @@
 import Docker from 'dockerode';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-
-const DOCKER_IMAGE = 'whatsapp-gateway-saas-whatsmeow'; // Assume this is built and tagged
+ 
+function getImageForProvider(provider: string): string {
+    // In a real scenario, this could come from a config file or database
+    const imageMap: Record<string, string> = {
+        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+        // 'baileys': 'some-other-image:latest',
+    };
+    const image = imageMap[provider];
+    if (!image) {
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+    return image;
+}
 
 interface CreateContainerOptions {
     instanceId: number;
     webhookUrl: string;
     cpuLimit: string;
     memoryLimit: string;
+    provider: string;
 }
 
 export async function createAndStartContainer(options: CreateContainerOptions) {
     const containerName = `instance-${options.instanceId}`;
     console.log(`Creating container ${containerName}`);
 
+    const DOCKER_IMAGE = getImageForProvider(options.provider);
     // First, try to pull the image to ensure it's up to date
     await pullImage(DOCKER_IMAGE);
+
+    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
+    const internalApiSecret = process.env.INTERNAL_API_SECRET;
 
     const container = await docker.createContainer({
         Image: DOCKER_IMAGE,
         name: containerName,
         Env: [
+            `INSTANCE_ID=${options.instanceId}`,
+            `GATEWAY_URL=${gatewayUrl}`,
+            `INTERNAL_API_SECRET=${internalApiSecret}`,
             `WEBHOOK_URL=${options.webhookUrl}`
         ],
         HostConfig: {

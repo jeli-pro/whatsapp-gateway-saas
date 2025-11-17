@@ -27,7 +27,7 @@ user.prompt.md
 
 ## File: drizzle/schema.ts
 ````typescript
-import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 export const users = pgTable('users', {
@@ -42,7 +42,7 @@ export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'run
 
 export const instances = pgTable('instances', {
     id: serial('id').primaryKey(),
-    userId: integer('user_id').notNull().references(() => users.id),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
     provider: providerEnum('provider').notNull(),
     webhookUrl: text('webhook_url'),
@@ -56,15 +56,34 @@ export const instances = pgTable('instances', {
     };
 });
 
+export const instanceState = pgTable('instance_state', {
+    id: serial('id').primaryKey(),
+    instanceId: integer('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
+    key: varchar('key', { length: 255 }).notNull(),
+    value: text('value').notNull(),
+}, (table) => {
+    return {
+        instanceKeyIdx: unique('instance_key_idx').on(table.instanceId, table.key),
+    };
+});
+
 export const userRelations = relations(users, ({ many }) => ({
   instances: many(instances),
 }));
 
-export const instanceRelations = relations(instances, ({ one }) => ({
+export const instanceRelations = relations(instances, ({ one, many }) => ({
   user: one(users, {
     fields: [instances.userId],
     references: [users.id],
   }),
+  state: many(instanceState),
+}));
+
+export const instanceStateRelations = relations(instanceState, ({ one }) => ({
+    instance: one(instances, {
+        fields: [instanceState.instanceId],
+        references: [instances.id],
+    }),
 }));
 ````
 
@@ -73,20 +92,33 @@ export const instanceRelations = relations(instances, ({ one }) => ({
 import Docker from 'dockerode';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-
-const DOCKER_IMAGE = 'whatsapp-gateway-saas-whatsmeow'; // Assume this is built and tagged
+ 
+function getImageForProvider(provider: string): string {
+    // In a real scenario, this could come from a config file or database
+    const imageMap: Record<string, string> = {
+        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+        // 'baileys': 'some-other-image:latest',
+    };
+    const image = imageMap[provider];
+    if (!image) {
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+    return image;
+}
 
 interface CreateContainerOptions {
     instanceId: number;
     webhookUrl: string;
     cpuLimit: string;
     memoryLimit: string;
+    provider: string;
 }
 
 export async function createAndStartContainer(options: CreateContainerOptions) {
     const containerName = `instance-${options.instanceId}`;
     console.log(`Creating container ${containerName}`);
 
+    const DOCKER_IMAGE = getImageForProvider(options.provider);
     // First, try to pull the image to ensure it's up to date
     await pullImage(DOCKER_IMAGE);
 
@@ -189,7 +221,7 @@ function parseMemory(mem: string): number {
 ````typescript
 import { Elysia, t } from 'elysia';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import postgres from 'postgres';
 import * as schema from '../../drizzle/schema';
 import { createAndStartContainer, findContainer, stopAndRemoveContainer } from './docker.service';
@@ -201,11 +233,6 @@ if (!connectionString) {
 
 const client = postgres(connectionString);
 const db = drizzle(client, { schema });
-
-const API_SECRET = process.env.API_SECRET;
-if (!API_SECRET) {
-  throw new Error("API_SECRET is not set");
-}
 
 // A simple proxy to fetch data from a container
 async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
@@ -223,19 +250,31 @@ async function proxyToContainer(containerIp: string, path: string, options?: Req
 const app = new Elysia()
   .get('/', () => ({ status: 'ok' }))
   .group('/api', (app) => app
-    // Simple bearer token auth
-    .onBeforeHandle(({ headers, set }) => {
+    // Resolve user from API Key
+    .resolve(async ({ headers }) => {
         const auth = headers['authorization'];
-        if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !== API_SECRET) {
+        if (!auth || !auth.startsWith('Bearer ')) {
+            return { user: null };
+        }
+        const apiKey = auth.substring(7);
+        if (!apiKey) {
+            return { user: null };
+        }
+        const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+        
+        return { user: user || null };
+    })
+    // Simple bearer token auth
+    .onBeforeHandle(({ user, set }) => {
+        if (!user) {
             set.status = 401;
             return { error: 'Unauthorized' };
         }
     })
-    .post('/instances', async ({ body, set }) => {
-        // TODO: Tie to an authenticated user
-        // For now, assuming user with ID 1 exists and is the only user.
+    .post('/instances', async ({ body, set, user }) => {
+        // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
-            userId: 1, 
+            userId: user.id, 
             phoneNumber: body.phone,
             provider: body.provider,
             webhookUrl: body.webhook,
@@ -255,6 +294,7 @@ const app = new Elysia()
                 webhookUrl: newInstance.webhookUrl || '',
                 cpuLimit: newInstance.cpuLimit || '0.5',
                 memoryLimit: newInstance.memoryLimit || '512m',
+                provider: newInstance.provider,
             });
             const [updatedInstance] = await db.update(schema.instances)
                 .set({ status: 'running' })
@@ -280,8 +320,19 @@ const app = new Elysia()
             }))
         })
     })
-    .get('/instances/:id/qr', async ({ params, set }) => {
+    .get('/instances/:id/qr', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
         const containerInfo = await findContainer(instanceId);
 
         if (!containerInfo || !containerInfo.State.Running) {
@@ -307,8 +358,19 @@ const app = new Elysia()
         
         return { qr: await qrResponse.text() };
     })
-    .post('/instances/:id/send', async ({ params, body, set }) => {
+    .post('/instances/:id/send', async ({ params, body, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
         const containerInfo = await findContainer(instanceId);
 
         if (!containerInfo || !containerInfo.State.Running) {
@@ -339,8 +401,19 @@ const app = new Elysia()
             text: t.String(),
         })
     })
-    .delete('/instances/:id', async ({ params, set }) => {
+    .delete('/instances/:id', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
 
         try {
             await stopAndRemoveContainer(instanceId);
@@ -351,6 +424,77 @@ const app = new Elysia()
             set.status = 500;
             return { error: 'Failed to delete instance' };
         }
+    })
+  )
+  // New internal API group for state management
+  .group('/internal', (app) => app
+    .onBeforeHandle(({ headers, set }) => {
+        const internalSecret = process.env.INTERNAL_API_SECRET;
+        if (!internalSecret) {
+            console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+            set.status = 503;
+            return { error: 'Service Unavailable' };
+        }
+        if (headers['x-internal-secret'] !== internalSecret) {
+            set.status = 401;
+            return { error: 'Unauthorized' };
+        }
+    })
+    .get('/state/:instanceId', async ({ params }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const states = await db.select({
+            key: schema.instanceState.key,
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+        
+        return states;
+    })
+    .get('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        ));
+
+        if (!state) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        return state.value; // Return raw value
+    })
+    .post('/state/:instanceId', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const { key, value } = body;
+        
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key, value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+        
+        set.status = 204;
+    }, {
+        body: t.Object({
+            key: t.String(),
+            value: t.String(),
+        })
+    })
+    .delete('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const result = await db.delete(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        )).returning();
+
+        if (result.length === 0) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        
+        set.status = 204;
     })
   )
   .listen(3000);
@@ -636,6 +780,7 @@ All requirements fulfilled:
 ````
 DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
 API_SECRET="your-super-secret-api-key"
+INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
 ````
 
 ## File: drizzle.config.ts

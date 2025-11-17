@@ -1,0 +1,662 @@
+uuid: 440938b8-6a3f-42e5-a249-14a060ab062e
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T14:47:19.457Z'
+gitCommitMsg: >-
+  feat(state): Implement decoupled state snapshotting for providers
+
+  Refactors the architecture to support centralized state management, a critical
+  feature for enabling zero-downtime container migrations.
+
+  - The gateway now exposes internal API endpoints
+  (`/internal/state/.../snapshot`)
+    for storing and retrieving provider session data as binary snapshots.
+  - The Docker service injects environment variables (`GATEWAY_URL`,
+  `INSTANCE_ID`,
+    `INTERNAL_API_SECRET`) into provider containers, allowing them to
+    securely communicate with the gateway.
+  - The `whatsmeow` provider is updated to fetch its SQLite database from
+    the gateway on startup and upload it back on graceful shutdown (`SIGTERM`).
+
+  This change moves from a brittle, filesystem-dependent model to a robust,
+  decoupled architecture where providers are stateless workers and the gateway
+  is the central orchestrator of state.
+promptSummary: >-
+  The user wanted to execute Part 4 of our refactoring plan to decouple the
+  `whatsmeow` provider's state management from its container, enabling
+  zero-downtime migrations as promised in the README.
+reasoning:
+  - >-
+    Excellent, you are correct to challenge the initial plan. Giving each
+    provider container direct access to the central database would be a security
+    and maintenance nightmare. The provider should be a self-contained, "dumb"
+    worker, and the gateway should be the intelligent orchestrator.
+  - >-
+    A much cleaner and more robust architecture is to use a state snapshotting
+    pattern. The provider will work with its high-performance local SQLite
+    database, and we'll use the gateway's internal API to backup and restore
+    this state on demand. This achieves the goal of centralized state for
+    migrations without sacrificing encapsulation or performance.
+  - >-
+    Here is the implementation of this superior, decoupled architecture for Part
+    4.
+  - '### Step 1: Update Gateway to Manage State Snapshots'
+  - >-
+    First, I'll update the gateway. It needs new internal API endpoints to
+    handle saving and retrieving the provider's session (the SQLite DB file). It
+    also needs to pass the correct environment variables to the provider
+    container so it knows how to call back to these new endpoints.
+  - >-
+    I'm adding a `GATEWAY_URL` to the environment configuration. For containers
+    to reach a service running on the host, `http://host.docker.internal:3000`
+    is the standard, reliable address.
+  - >-
+    Now I'll modify the Docker service to inject the required environment
+    variables into each new container.
+  - >-
+    Finally, I'll add the snapshot endpoints to the gateway's internal API. To
+    store the binary data in our `text` database column, I'll base64 encode it.
+  - '### Step 2: Refactor Whatsmeow Provider for State Snapshotting'
+  - >-
+    Now, I'll refactor the Go provider. It will still use SQLite locally for
+    performance, but it will be modified to fetch its database from the gateway
+    on startup and push it back on graceful shutdown.
+operations:
+  - type: write
+    path: .env.example
+    content: >
+      <<<<<<< SEARCH
+
+      DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+
+      API_SECRET="your-super-secret-api-key"
+
+      INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+
+      =======
+
+      DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+
+      API_SECRET="your-super-secret-api-key"
+
+      INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+
+      GATEWAY_URL="http://host.docker.internal:3000" # URL for provider
+      containers to reach the gateway
+
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+  - type: write
+    path: gateway/src/docker.service.ts
+    content: >+
+      --- gateway/src/docker.service.ts
+
+      +++ gateway/src/docker.service.ts
+
+      @@ -29,10 +29,15 @@
+           // First, try to pull the image to ensure it's up to date
+           await pullImage(DOCKER_IMAGE);
+       
+      +    const gatewayUrl = process.env.GATEWAY_URL ||
+      'http://host.docker.internal:3000';
+
+      +    const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
+      +
+           const container = await docker.createContainer({
+               Image: DOCKER_IMAGE,
+               name: containerName,
+               Env: [
+      +            `INSTANCE_ID=${options.instanceId}`,
+
+      +            `GATEWAY_URL=${gatewayUrl}`,
+
+      +            `INTERNAL_API_SECRET=${internalApiSecret}`,
+                   `WEBHOOK_URL=${options.webhookUrl}`
+               ],
+               HostConfig: {
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/src/index.ts
+    content: >+
+      --- gateway/src/index.ts
+
+      +++ gateway/src/index.ts
+
+      @@ -219,6 +219,43 @@
+               
+               set.status = 204;
+           })
+      +    .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+
+      +        const instanceId = parseInt(params.instanceId, 10);
+
+      +        const [state] = await db.select({
+
+      +            value: schema.instanceState.value
+
+      +        }).from(schema.instanceState).where(and(
+
+      +            eq(schema.instanceState.instanceId, instanceId),
+
+      +            eq(schema.instanceState.key, 'session_snapshot')
+
+      +        ));
+
+      +
+
+      +        if (!state || !state.value) {
+
+      +            set.status = 404;
+
+      +            return { error: 'Snapshot not found' };
+
+      +        }
+
+      +        // The value is base64 encoded text, decode it and return as
+      binary
+
+      +        set.headers['Content-Type'] = 'application/octet-stream';
+
+      +        return Buffer.from(state.value, 'base64');
+
+      +    })
+
+      +    .post('/state/:instanceId/snapshot', async ({ params, body, set }) =>
+      {
+
+      +        const instanceId = parseInt(params.instanceId, 10);
+
+      +        
+
+      +        // The body is raw bytes, we need to base64 encode it for storing
+      in text field
+
+      +        const bodyBuffer = await Bun.readableStreamToBuffer(body as
+      ReadableStream);
+
+      +        const value = bodyBuffer.toString('base64');
+
+      +
+
+      +        await db.insert(schema.instanceState)
+
+      +            .values({ instanceId, key: 'session_snapshot', value })
+
+      +            .onConflictDoUpdate({
+
+      +                target: [schema.instanceState.instanceId,
+      schema.instanceState.key],
+
+      +                set: { value: value }
+
+      +            });
+
+      +        
+
+      +        set.status = 204;
+
+      +    }, {
+
+      +        // Allow any content type as we are reading the raw body
+
+      +        type: 'none',
+
+      +        body: t.Any(),
+
+      +    })
+         )
+         .listen(3000);
+       
+
+    patchStrategy: standard-diff
+  - type: write
+    path: providers/whatsmeow/main.go
+    content: "package main\n\nimport (\n\t\"bytes\"\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"io\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"sync\"\n\t\"syscall\"\n\t\"time\"\n\n\t_ \"github.com/mattn/go-sqlite3\"\n\t\"github.com/skip2/go-qrcode\"\n\t\"go.mau.fi/whatsmeow\"\n\t\"go.mau.fi/whatsmeow/proto/waE2E\"\n\t\"go.mau.fi/whatsmeow/store/sqlstore\"\n\t\"go.mau.fi/whatsmeow/types\"\n\t\"go.mau.fi/whatsmeow/types/events\"\n\twaLog \"go.mau.fi/whatsmeow/util/log\"\n\t\"google.golang.org/protobuf/proto\"\n)\n\nvar client *whatsmeow.Client\nvar waLogger waLog.Logger\nvar qrCodeStr string\nvar qrCodeMutex sync.RWMutex\nvar startTime = time.Now()\n\n// --- State Snapshotting ---\nvar (\n\tgatewayURL      = os.Getenv(\"GATEWAY_URL\")\n\tinstanceID      = os.Getenv(\"INSTANCE_ID\")\n\tinternalAPISecret = os.Getenv(\"INTERNAL_API_SECRET\")\n\tdbPath          = \"/app/session/whatsmeow.db\"\n)\n\nfunc fetchStateSnapshot() error {\n\tif gatewayURL == \"\" || instanceID == \"\" || internalAPISecret == \"\" {\n\t\twaLogger.Warnf(\"State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET\")\n\t\treturn nil\n\t}\n\turl := fmt.Sprintf(\"%s/internal/state/%s/snapshot\", gatewayURL, instanceID)\n\treq, err := http.NewRequest(\"GET\", url, nil)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create snapshot fetch request: %w\", err)\n\t}\n\treq.Header.Set(\"X-Internal-Secret\", internalAPISecret)\n\n\twaLogger.Infof(\"Fetching state snapshot from %s\", url)\n\tresp, err := http.DefaultClient.Do(req)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to execute snapshot fetch request: %w\", err)\n\t}\n\tdefer resp.Body.Close()\n\n\tif resp.StatusCode == http.StatusNotFound {\n\t\twaLogger.Infof(\"No existing state snapshot found. Starting fresh.\")\n\t\treturn nil\n\t}\n\tif resp.StatusCode != http.StatusOK {\n\t\treturn fmt.Errorf(\"failed to fetch snapshot, status: %s\", resp.Status)\n\t}\n\n\t// Ensure session directory exists\n\tif err := os.MkdirAll(\"/app/session\", 0755); err != nil {\n\t\treturn fmt.Errorf(\"failed to create session directory: %w\", err)\n\t}\n\n\tfile, err := os.Create(dbPath)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create database file: %w\", err)\n\t}\n\tdefer file.Close()\n\n\t_, err = io.Copy(file, resp.Body)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to write snapshot to file: %w\", err)\n\t}\n\twaLogger.Infof(\"Successfully restored state snapshot.\")\n\treturn nil\n}\n\nfunc uploadStateSnapshot() {\n\tif gatewayURL == \"\" || instanceID == \"\" || internalAPISecret == \"\" {\n\t\twaLogger.Warnf(\"State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET\")\n\t\treturn\n\t}\n\n\tfileData, err := os.ReadFile(dbPath)\n\tif err != nil {\n\t\tif os.IsNotExist(err) {\n\t\t\twaLogger.Warnf(\"Database file not found at %s, nothing to snapshot.\", dbPath)\n\t\t\treturn\n\t\t}\n\t\twaLogger.Errorf(\"Failed to read database file for snapshotting: %v\", err)\n\t\treturn\n\t}\n\n\turl := fmt.Sprintf(\"%s/internal/state/%s/snapshot\", gatewayURL, instanceID)\n\treq, err := http.NewRequest(\"POST\", url, bytes.NewBuffer(fileData))\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to create snapshot upload request: %v\", err)\n\t\treturn\n\t}\n\treq.Header.Set(\"X-Internal-Secret\", internalAPISecret)\n\treq.Header.Set(\"Content-Type\", \"application/octet-stream\")\n\n\twaLogger.Infof(\"Uploading state snapshot to %s\", url)\n\tresp, err := http.DefaultClient.Do(req)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to execute snapshot upload request: %v\", err)\n\t\treturn\n\t}\n\tdefer resp.Body.Close()\n\n\tif resp.StatusCode >= 300 {\n\t\twaLogger.Errorf(\"Failed to upload snapshot, status: %s\", resp.Status)\n\t} else {\n\t\twaLogger.Infof(\"Successfully uploaded state snapshot.\")\n\t}\n}\n\n// --- End State Snapshotting ---\n\ntype webhookPayload struct {\n\tEvent string      `json:\"event\"`\n\tData  interface{} `json:\"data\"`\n}\n\nfunc eventHandler(evt interface{}) {\n\twebhookURL := os.Getenv(\"WEBHOOK_URL\")\n\tif webhookURL == \"\" {\n\t\treturn // No webhook configured\n\t}\n\n\tvar payload webhookPayload\n\tswitch v := evt.(type) {\n\tcase *events.Message:\n\t\twaLogger.Infof(\"Received message from %s: %s\", v.Info.Sender, v.Message.GetConversation())\n\t\tpayload = webhookPayload{Event: \"message\", Data: v}\n\tcase *events.Connected:\n\t\twaLogger.Infof(\"Connected to WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"connected\", Data: nil}\n\tcase *events.Disconnected:\n\t\twaLogger.Infof(\"Disconnected from WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"disconnected\", Data: nil}\n\tdefault:\n\t\treturn // Ignore other events for now\n\t}\n\n\tgo sendWebhook(webhookURL, payload)\n}\n\nfunc sendWebhook(url string, payload webhookPayload) {\n\tdata, err := json.Marshal(payload)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to marshal webhook payload: %v\", err)\n\t\treturn\n\t}\n\n\treq, err := http.NewRequest(\"POST\", url, bytes.NewBuffer(data))\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to create webhook request: %v\", err)\n\t\treturn\n\t}\n\treq.Header.Set(\"Content-Type\", \"application/json\")\n\n\thttpClient := &http.Client{Timeout: 10 * time.Second}\n\tresp, err := httpClient.Do(req)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to send webhook: %v\", err)\n\t\treturn\n\t}\n\tdefer resp.Body.Close()\n\n\tif resp.StatusCode >= 300 {\n\t\twaLogger.Warnf(\"Webhook call failed with status: %s\", resp.Status)\n\t}\n}\n\nfunc getQR(w http.ResponseWriter, r *http.Request) {\n\tqrCodeMutex.RLock()\n\tdefer qrCodeMutex.RUnlock()\n\tif qrCodeStr == \"\" {\n\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\thttp.Error(w, `{\"status\": \"no_qr\", \"message\": \"QR code not available\"}`, http.StatusNotFound)\n\t\treturn\n\t}\n\t// Return QR code as PNG image for better compatibility\n\tw.Header().Set(\"Content-Type\", \"image/png\")\n\tpng, err := qrcode.Encode(qrCodeStr, qrcode.Medium, 256)\n\tif err != nil {\n\t\thttp.Error(w, \"Failed to generate QR code\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tw.Write(png)\n}\n\ntype sendMessageRequest struct {\n\tTo   string `json:\"to\"`\n\tText string `json:\"text\"`\n}\n\nfunc parseJID(arg string) (types.JID, bool) {\n\tif arg[0] == '+' {\n\t\targ = arg[1:]\n\t}\n\tif !strings.ContainsRune(arg, '@') {\n\t\treturn types.NewJID(arg, types.DefaultUserServer), true\n\t}\n\trecipient, err := types.ParseJID(arg)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Invalid JID %s: %v\", arg, err)\n\t\treturn recipient, false\n\t} else if recipient.User == \"\" {\n\t\twaLogger.Errorf(\"Invalid JID %s: no user specified\", arg)\n\t\treturn recipient, false\n\t}\n\treturn recipient, true\n}\n\nfunc sendText(w http.ResponseWriter, r *http.Request) {\n\tif client == nil || !client.IsConnected() {\n\t\thttp.Error(w, \"Client not connected\", http.StatusServiceUnavailable)\n\t\treturn\n\t}\n\n\tvar reqBody sendMessageRequest\n\tif err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {\n\t\thttp.Error(w, \"Invalid request body\", http.StatusBadRequest)\n\t\treturn\n\t}\n\n\trecipient, ok := parseJID(reqBody.To)\n\tif !ok {\n\t\thttp.Error(w, fmt.Sprintf(\"Invalid JID: %s\", reqBody.To), http.StatusBadRequest)\n\t\treturn\n\t}\n\n\tmsg := &waE2E.Message{\n\t\tConversation: proto.String(reqBody.Text),\n\t}\n\n\tts, err := client.SendMessage(context.Background(), recipient, msg)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Error sending message: %v\", err)\n\t\thttp.Error(w, \"Failed to send message\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\twaLogger.Infof(\"Message sent to %s (ID: %s, Timestamp: %s)\", recipient.String(), ts.ID, ts.Timestamp)\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]string{\"status\": \"ok\", \"id\": ts.ID})\n}\n\nfunc healthHandler(w http.ResponseWriter, r *http.Request) {\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\n\tconnected := client != nil && client.IsConnected()\n\tphoneID := \"\"\n\tif client != nil && client.Store.ID != nil {\n\t\tphoneID = client.Store.ID.String()\n\t}\n\n\tresponse := map[string]interface{}{\n\t\t\"status\":      \"healthy\",\n\t\t\"connected\":   connected,\n\t\t\"phone_id\":    phoneID,\n\t\t\"uptime\":      time.Since(startTime).String(),\n\t\t\"version\":     \"1.0.0\",\n\t\t\"timestamp\":   time.Now().Unix(),\n\t}\n\n\tjson.NewEncoder(w).Encode(response)\n}\n\nfunc startAPIServer() {\n\thttp.HandleFunc(\"/health\", healthHandler)\n\thttp.HandleFunc(\"/status\", healthHandler) // Alias for health\n\thttp.HandleFunc(\"/qr\", getQR)\n\thttp.HandleFunc(\"/send\", sendText)\n\twaLogger.Infof(\"Starting internal API server on :8080\")\n\tif err := http.ListenAndServe(\":8080\", nil); err != nil {\n\t\tlog.Fatalf(\"API server failed: %v\", err)\n\t}\n}\n\nfunc main() {\n\twaLogger = waLog.Stdout(\"main\", \"INFO\", true)\n\tdbLog := waLog.Stdout(\"Database\", \"INFO\", true)\n\n\t// Fetch state from gateway before initializing DB connection\n\tif err := fetchStateSnapshot(); err != nil {\n\t\t// We panic here because a failed restore could lead to data loss\n\t\t// or an inconsistent state. It's safer to fail hard.\n\t\tpanic(fmt.Errorf(\"critical error during state restoration: %w\", err))\n\t}\n\n\tctx := context.Background()\n\tcontainer, err := sqlstore.New(ctx, \"sqlite3\", fmt.Sprintf(\"file:%s?_foreign_keys=on\", dbPath), dbLog)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdeviceStore, err := container.GetFirstDevice(ctx)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\tclient = whatsmeow.NewClient(deviceStore, waLogger)\n\tclient.AddEventHandler(eventHandler)\n\n\tgo startAPIServer()\n\n\tif client.Store.ID == nil {\n\t\tqrChan, _ := client.GetQRChannel(context.Background())\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t\tfor evt := range qrChan {\n\t\t\tif evt.Event == \"code\" {\n\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\tqrCodeStr = evt.Code\n\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t// Also print to console for debugging\n\t\t\t\tqr, _ := qrcode.New(evt.Code, qrcode.Medium)\n\t\t\t\tfmt.Println(\"QR code:\\n\" + qr.ToString(true))\n\t\t\t} else {\n\t\t\t\twaLogger.Infof(\"Login event: %s\", evt.Event)\n\t\t\t\tif evt.Event == \"success\" {\n\t\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\t\tqrCodeStr = \"\" // Clear QR code after login\n\t\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t} else {\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t}\n\n\tc := make(chan os.Signal, 1)\n\tsignal.Notify(c, os.Interrupt, syscall.SIGTERM)\n\t<-c\n\n\twaLogger.Infof(\"Received shutdown signal. Uploading state snapshot...\")\n\tuploadStateSnapshot()\n\tclient.Disconnect()\n\twaLogger.Infof(\"Disconnected. Goodbye.\")\n}"
+    patchStrategy: replace
+snapshot:
+  .env.example: |-
+    DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+    API_SECRET="your-super-secret-api-key"
+    INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+  gateway/src/docker.service.ts: >-
+    import Docker from 'dockerode';
+
+
+    const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+     
+    function getImageForProvider(provider: string): string {
+        // In a real scenario, this could come from a config file or database
+        const imageMap: Record<string, string> = {
+            'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+            // 'baileys': 'some-other-image:latest',
+        };
+        const image = imageMap[provider];
+        if (!image) {
+            throw new Error(`Unsupported provider: ${provider}`);
+        }
+        return image;
+    }
+
+
+    interface CreateContainerOptions {
+        instanceId: number;
+        webhookUrl: string;
+        cpuLimit: string;
+        memoryLimit: string;
+        provider: string;
+    }
+
+
+    export async function createAndStartContainer(options:
+    CreateContainerOptions) {
+        const containerName = `instance-${options.instanceId}`;
+        console.log(`Creating container ${containerName}`);
+
+        const DOCKER_IMAGE = getImageForProvider(options.provider);
+        // First, try to pull the image to ensure it's up to date
+        await pullImage(DOCKER_IMAGE);
+
+        const container = await docker.createContainer({
+            Image: DOCKER_IMAGE,
+            name: containerName,
+            Env: [
+                `WEBHOOK_URL=${options.webhookUrl}`
+            ],
+            HostConfig: {
+                // Restart unless manually stopped
+                RestartPolicy: {
+                    Name: 'unless-stopped',
+                },
+                // Resource limits
+                NanoCpus: Math.floor(parseFloat(options.cpuLimit) * 1e9), // e.g. 0.5 -> 500000000
+                Memory: parseMemory(options.memoryLimit), // e.g. "512m" -> 536870912
+            },
+            Labels: {
+                'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+            }
+        });
+
+        console.log(`Starting container ${container.id}`);
+        await container.start();
+
+        return container;
+    }
+
+
+    export async function stopAndRemoveContainer(instanceId: number) {
+        const containerName = `instance-${instanceId}`;
+        try {
+            const container = docker.getContainer(containerName);
+            const inspect = await container.inspect();
+            if (inspect.State.Running) {
+                console.log(`Stopping container ${containerName}`);
+                await container.stop();
+            }
+            console.log(`Removing container ${containerName}`);
+            await container.remove();
+            return true;
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                console.log(`Container ${containerName} not found, nothing to do.`);
+                return true;
+            }
+            console.error(`Error stopping/removing container ${containerName}:`, error);
+            throw error;
+        }
+    }
+
+
+    export async function findContainer(instanceId: number) {
+        try {
+            const container = docker.getContainer(`instance-${instanceId}`);
+            return await container.inspect();
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                return null;
+            }
+            throw error;
+        }
+    }
+
+
+    function pullImage(imageName: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            console.log(`Pulling image ${imageName}...`);
+            docker.pull(imageName, (err: Error, stream: NodeJS.ReadableStream) => {
+                if (err) {
+                    return reject(err);
+                }
+                docker.modem.followProgress(stream, onFinished, onProgress);
+
+                function onFinished(err: Error | null, output: any) {
+                    if (err) {
+                        return reject(err);
+                    }
+                    console.log(`Image ${imageName} pulled successfully.`);
+                    resolve();
+                }
+                function onProgress(event: any) {
+                    // You can add progress reporting here if needed
+                }
+            });
+        });
+    }
+
+
+    function parseMemory(mem: string): number {
+        const unit = mem.charAt(mem.length - 1).toLowerCase();
+        const value = parseInt(mem.slice(0, -1), 10);
+        switch (unit) {
+            case 'g': return value * 1024 * 1024 * 1024;
+            case 'm': return value * 1024 * 1024;
+            case 'k': return value * 1024;
+            default: return parseInt(mem, 10);
+        }
+    }
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq, and } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, findContainer, stopAndRemoveContainer }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    // A simple proxy to fetch data from a container
+
+    async function proxyToContainer(containerIp: string, path: string, options?:
+    RequestInit) {
+        const url = `http://${containerIp}:8080${path}`;
+        try {
+            const response = await fetch(url, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${url}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Resolve user from API Key
+        .resolve(async ({ headers }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ')) {
+                return { user: null };
+            }
+            const apiKey = auth.substring(7);
+            if (!apiKey) {
+                return { user: null };
+            }
+            const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+            
+            return { user: user || null };
+        })
+        // Simple bearer token auth
+        .onBeforeHandle(({ user, set }) => {
+            if (!user) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set, user }) => {
+            // user is guaranteed to be non-null by the onBeforeHandle guard.
+            const [newInstance] = await db.insert(schema.instances).values({
+                userId: user.id, 
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                    provider: newInstance.provider,
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                phone: t.String(),
+                provider: t.Enum(schema.providerEnum),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const qrResponse = await proxyToContainer(ip, '/qr');
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            }
+            
+            return { qr: await qrResponse.text() };
+        })
+        .post('/instances/:id/send', async ({ params, body, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const sendResponse = await proxyToContainer(ip, '/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+
+            try {
+                await stopAndRemoveContainer(instanceId);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+      )
+      // New internal API group for state management
+      .group('/internal', (app) => app
+        .onBeforeHandle(({ headers, set }) => {
+            const internalSecret = process.env.INTERNAL_API_SECRET;
+            if (!internalSecret) {
+                console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+                set.status = 503;
+                return { error: 'Service Unavailable' };
+            }
+            if (headers['x-internal-secret'] !== internalSecret) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .get('/state/:instanceId', async ({ params }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const states = await db.select({
+                key: schema.instanceState.key,
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+            
+            return states;
+        })
+        .get('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            ));
+
+            if (!state) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            return state.value; // Return raw value
+        })
+        .post('/state/:instanceId', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const { key, value } = body;
+            
+            await db.insert(schema.instanceState)
+                .values({ instanceId, key, value })
+                .onConflictDoUpdate({
+                    target: [schema.instanceState.instanceId, schema.instanceState.key],
+                    set: { value: value }
+                });
+            
+            set.status = 204;
+        }, {
+            body: t.Object({
+                key: t.String(),
+                value: t.String(),
+            })
+        })
+        .delete('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const result = await db.delete(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            )).returning();
+
+            if (result.length === 0) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            
+            set.status = 204;
+        })
+      )
+      .listen(3000);
+
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+  providers/whatsmeow/main.go: "package main\n\nimport (\n\t\"bytes\"\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"sync\"\n\t\"syscall\"\n\t\"time\"\n\n\t_ \"github.com/mattn/go-sqlite3\"\n\t\"github.com/skip2/go-qrcode\"\n\t\"go.mau.fi/whatsmeow\"\n\t\"go.mau.fi/whatsmeow/proto/waE2E\"\n\t\"go.mau.fi/whatsmeow/store/sqlstore\"\n\t\"go.mau.fi/whatsmeow/types\"\n\t\"go.mau.fi/whatsmeow/types/events\"\n\twaLog \"go.mau.fi/whatsmeow/util/log\"\n\t\"google.golang.org/protobuf/proto\"\n)\n\nvar client *whatsmeow.Client\nvar waLogger waLog.Logger\nvar qrCodeStr string\nvar qrCodeMutex sync.RWMutex\nvar startTime = time.Now()\n\ntype webhookPayload struct {\n\tEvent string      `json:\"event\"`\n\tData  interface{} `json:\"data\"`\n}\n\nfunc eventHandler(evt interface{}) {\n\twebhookURL := os.Getenv(\"WEBHOOK_URL\")\n\tif webhookURL == \"\" {\n\t\treturn // No webhook configured\n\t}\n\n\tvar payload webhookPayload\n\tswitch v := evt.(type) {\n\tcase *events.Message:\n\t\twaLogger.Infof(\"Received message from %s: %s\", v.Info.Sender, v.Message.GetConversation())\n\t\tpayload = webhookPayload{Event: \"message\", Data: v}\n\tcase *events.Connected:\n\t\twaLogger.Infof(\"Connected to WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"connected\", Data: nil}\n\tcase *events.Disconnected:\n\t\twaLogger.Infof(\"Disconnected from WhatsApp\")\n\t\tpayload = webhookPayload{Event: \"disconnected\", Data: nil}\n\tdefault:\n\t\treturn // Ignore other events for now\n\t}\n\n\tgo sendWebhook(webhookURL, payload)\n}\n\nfunc sendWebhook(url string, payload webhookPayload) {\n\tdata, err := json.Marshal(payload)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to marshal webhook payload: %v\", err)\n\t\treturn\n\t}\n\n\treq, err := http.NewRequest(\"POST\", url, bytes.NewBuffer(data))\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to create webhook request: %v\", err)\n\t\treturn\n\t}\n\treq.Header.Set(\"Content-Type\", \"application/json\")\n\n\thttpClient := &http.Client{Timeout: 10 * time.Second}\n\tresp, err := httpClient.Do(req)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Failed to send webhook: %v\", err)\n\t\treturn\n\t}\n\tdefer resp.Body.Close()\n\n\tif resp.StatusCode >= 300 {\n\t\twaLogger.Warnf(\"Webhook call failed with status: %s\", resp.Status)\n\t}\n}\n\nfunc getQR(w http.ResponseWriter, r *http.Request) {\n\tqrCodeMutex.RLock()\n\tdefer qrCodeMutex.RUnlock()\n\tif qrCodeStr == \"\" {\n\t\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t\thttp.Error(w, `{\"status\": \"no_qr\", \"message\": \"QR code not available\"}`, http.StatusNotFound)\n\t\treturn\n\t}\n\t// Return QR code as PNG image for better compatibility\n\tw.Header().Set(\"Content-Type\", \"image/png\")\n\tpng, err := qrcode.Encode(qrCodeStr, qrcode.Medium, 256)\n\tif err != nil {\n\t\thttp.Error(w, \"Failed to generate QR code\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tw.Write(png)\n}\n\ntype sendMessageRequest struct {\n\tTo   string `json:\"to\"`\n\tText string `json:\"text\"`\n}\n\nfunc parseJID(arg string) (types.JID, bool) {\n\tif arg[0] == '+' {\n\t\targ = arg[1:]\n\t}\n\tif !strings.ContainsRune(arg, '@') {\n\t\treturn types.NewJID(arg, types.DefaultUserServer), true\n\t}\n\trecipient, err := types.ParseJID(arg)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Invalid JID %s: %v\", arg, err)\n\t\treturn recipient, false\n\t} else if recipient.User == \"\" {\n\t\twaLogger.Errorf(\"Invalid JID %s: no user specified\", arg)\n\t\treturn recipient, false\n\t}\n\treturn recipient, true\n}\n\nfunc sendText(w http.ResponseWriter, r *http.Request) {\n\tif client == nil || !client.IsConnected() {\n\t\thttp.Error(w, \"Client not connected\", http.StatusServiceUnavailable)\n\t\treturn\n\t}\n\n\tvar reqBody sendMessageRequest\n\tif err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {\n\t\thttp.Error(w, \"Invalid request body\", http.StatusBadRequest)\n\t\treturn\n\t}\n\n\trecipient, ok := parseJID(reqBody.To)\n\tif !ok {\n\t\thttp.Error(w, fmt.Sprintf(\"Invalid JID: %s\", reqBody.To), http.StatusBadRequest)\n\t\treturn\n\t}\n\n\tmsg := &waE2E.Message{\n\t\tConversation: proto.String(reqBody.Text),\n\t}\n\n\tts, err := client.SendMessage(context.Background(), recipient, msg)\n\tif err != nil {\n\t\twaLogger.Errorf(\"Error sending message: %v\", err)\n\t\thttp.Error(w, \"Failed to send message\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\n\twaLogger.Infof(\"Message sent to %s (ID: %s, Timestamp: %s)\", recipient.String(), ts.ID, ts.Timestamp)\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(map[string]string{\"status\": \"ok\", \"id\": ts.ID})\n}\n\nfunc healthHandler(w http.ResponseWriter, r *http.Request) {\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\n\tconnected := client != nil && client.IsConnected()\n\tphoneID := \"\"\n\tif client != nil && client.Store.ID != nil {\n\t\tphoneID = client.Store.ID.String()\n\t}\n\n\tresponse := map[string]interface{}{\n\t\t\"status\":      \"healthy\",\n\t\t\"connected\":   connected,\n\t\t\"phone_id\":    phoneID,\n\t\t\"uptime\":      time.Since(startTime).String(),\n\t\t\"version\":     \"1.0.0\",\n\t\t\"timestamp\":   time.Now().Unix(),\n\t}\n\n\tjson.NewEncoder(w).Encode(response)\n}\n\nfunc startAPIServer() {\n\thttp.HandleFunc(\"/health\", healthHandler)\n\thttp.HandleFunc(\"/status\", healthHandler) // Alias for health\n\thttp.HandleFunc(\"/qr\", getQR)\n\thttp.HandleFunc(\"/send\", sendText)\n\twaLogger.Infof(\"Starting internal API server on :8080\")\n\tif err := http.ListenAndServe(\":8080\", nil); err != nil {\n\t\tlog.Fatalf(\"API server failed: %v\", err)\n\t}\n}\n\nfunc main() {\n\twaLogger = waLog.Stdout(\"main\", \"INFO\", true)\n\tdbLog := waLog.Stdout(\"Database\", \"INFO\", true)\n\n\tctx := context.Background()\n\tcontainer, err := sqlstore.New(ctx, \"sqlite3\", \"file:/app/session/whatsmeow.db?_foreign_keys=on\", dbLog)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdeviceStore, err := container.GetFirstDevice(ctx)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\tclient = whatsmeow.NewClient(deviceStore, waLogger)\n\tclient.AddEventHandler(eventHandler)\n\n\tgo startAPIServer()\n\n\tif client.Store.ID == nil {\n\t\tqrChan, _ := client.GetQRChannel(context.Background())\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t\tfor evt := range qrChan {\n\t\t\tif evt.Event == \"code\" {\n\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\tqrCodeStr = evt.Code\n\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t// Also print to console for debugging\n\t\t\t\tqr, _ := qrcode.New(evt.Code, qrcode.Medium)\n\t\t\t\tfmt.Println(\"QR code:\\n\" + qr.ToString(true))\n\t\t\t} else {\n\t\t\t\twaLogger.Infof(\"Login event: %s\", evt.Event)\n\t\t\t\tif evt.Event == \"success\" {\n\t\t\t\t\tqrCodeMutex.Lock()\n\t\t\t\t\tqrCodeStr = \"\" // Clear QR code after login\n\t\t\t\t\tqrCodeMutex.Unlock()\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t} else {\n\t\terr = client.Connect()\n\t\tif err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t}\n\n\tc := make(chan os.Signal, 1)\n\tsignal.Notify(c, os.Interrupt, syscall.SIGTERM)\n\t<-c\n\n\tclient.Disconnect()\n}"
+approved: true
+linesAdded: 152
+linesRemoved: 1
+linesDifference: 153
+gitCommittedAt: null
+status: committed
+id: 8

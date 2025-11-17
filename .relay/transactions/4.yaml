@@ -1,0 +1,427 @@
+uuid: 00b0d3a5-e111-40be-ac24-1053be4d7801
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T14:39:51.000Z'
+gitCommitMsg: >-
+  feat(gateway): Implement true multi-tenant authentication
+
+  Replaced the static, shared API_SECRET with a dynamic, per-user API key
+  authentication mechanism. The API now looks up the user in the database based
+  on the provided bearer token.
+
+  - Removed the hardcoded `API_SECRET` check. - Added a middleware to resolve
+  the user from the database via their API key. - Associated new instances with
+  the authenticated user. - Added ownership checks to all instance-specific
+  endpoints (GET, POST, DELETE) to enforce tenancy and prevent unauthorized
+  access to other users' resources.
+promptSummary: Execute Part 2 of the plan to implement multi-tenant authentication.
+reasoning:
+  - Executing Part 2 of the plan to implement true multi-tenant authentication.
+  - '### Step 1: Refactor Auth Middleware for API Key Lookup'
+  - >-
+    I will begin by modifying `gateway/src/index.ts`. The current authentication
+    scheme uses a single, shared `API_SECRET`. I'll replace this with a
+    middleware that resolves a user from the database based on the provided
+    bearer token (API key). This involves removing the static secret, adding an
+    Elysia `.resolve` block to fetch the user, and a `.onBeforeHandle` block to
+    protect all API endpoints.
+  - '### Step 2: Use Authenticated User for All Operations'
+  - >-
+    With the user context available, I will update all relevant endpoints. The
+    `POST /instances` endpoint will now associate new instances with the
+    authenticated user's ID instead of a hardcoded value. Crucially, I will also
+    add ownership checks to all instance-specific endpoints (`GET /qr`, `POST
+    /send`, `DELETE /:id`) to ensure a user can only access and manage their own
+    resources. This is a critical security enhancement for a multi-tenant
+    system.
+  - 'Here are the changes for `gateway/src/index.ts`:'
+  - >-
+    These changes complete Part 2, transforming the gateway from a single-user
+    proof-of-concept into a properly authenticated, multi-tenant API layer.
+operations:
+  - type: write
+    path: gateway/src/index.ts
+    content: >+
+      --- gateway/src/index.ts
+
+      +++ gateway/src/index.ts
+
+      @@ -8,12 +8,6 @@
+       const client = postgres(connectionString);
+       const db = drizzle(client, { schema });
+       
+      -const API_SECRET = process.env.API_SECRET;
+
+      -if (!API_SECRET) {
+
+      -  throw new Error("API_SECRET is not set");
+
+      -}
+
+      -
+       // A simple proxy to fetch data from a container
+       async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
+           const url = `http://${containerIp}:8080${path}`;
+      @@ -28,21 +22,32 @@
+       const app = new Elysia()
+         .get('/', () => ({ status: 'ok' }))
+         .group('/api', (app) => app
+      +    // Resolve user from API Key
+
+      +    .resolve(async ({ headers }) => {
+
+      +        const auth = headers['authorization'];
+
+      +        if (!auth || !auth.startsWith('Bearer ')) {
+
+      +            return { user: null };
+
+      +        }
+
+      +        const apiKey = auth.substring(7);
+
+      +        if (!apiKey) {
+
+      +            return { user: null };
+
+      +        }
+
+      +        const [user] = await
+      db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+
+      +        
+
+      +        return { user: user || null };
+
+      +    })
+           // Simple bearer token auth
+      -    .onBeforeHandle(({ headers, set }) => {
+
+      -        const auth = headers['authorization'];
+
+      -        if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !==
+      API_SECRET) {
+
+      +    .onBeforeHandle(({ user, set }) => {
+
+      +        if (!user) {
+                   set.status = 401;
+                   return { error: 'Unauthorized' };
+               }
+           })
+      -    .post('/instances', async ({ body, set }) => {
+
+      -        // TODO: Tie to an authenticated user
+
+      -        // For now, assuming user with ID 1 exists and is the only user.
+
+      +    .post('/instances', async ({ body, set, user }) => {
+
+      +        // user is guaranteed to be non-null by the onBeforeHandle guard.
+               const [newInstance] = await db.insert(schema.instances).values({
+      -            userId: 1, 
+
+      +            userId: user.id, 
+                   phoneNumber: body.phone,
+                   provider: body.provider,
+                   webhookUrl: body.webhook,
+      @@ -85,8 +90,19 @@
+                   }))
+               })
+           })
+      -    .get('/instances/:id/qr', async ({ params, set }) => {
+
+      +    .get('/instances/:id/qr', async ({ params, set, user }) => {
+               const instanceId = parseInt(params.id, 10);
+      +
+
+      +        // Ownership check
+
+      +        const [instance] = await
+      db.select().from(schema.instances).where(eq(schema.instances.id,
+      instanceId));
+
+      +        if (!instance) {
+
+      +            set.status = 404;
+
+      +            return { error: 'Instance not found' };
+
+      +        }
+
+      +        if (instance.userId !== user.id) {
+
+      +            set.status = 403;
+
+      +            return { error: 'Forbidden' };
+
+      +        }
+               const containerInfo = await findContainer(instanceId);
+       
+               if (!containerInfo || !containerInfo.State.Running) {
+      @@ -114,8 +130,19 @@
+               
+               return { qr: await qrResponse.text() };
+           })
+      -    .post('/instances/:id/send', async ({ params, body, set }) => {
+
+      +    .post('/instances/:id/send', async ({ params, body, set, user }) => {
+               const instanceId = parseInt(params.id, 10);
+      +
+
+      +        // Ownership check
+
+      +        const [instance] = await
+      db.select().from(schema.instances).where(eq(schema.instances.id,
+      instanceId));
+
+      +        if (!instance) {
+
+      +            set.status = 404;
+
+      +            return { error: 'Instance not found' };
+
+      +        }
+
+      +        if (instance.userId !== user.id) {
+
+      +            set.status = 403;
+
+      +            return { error: 'Forbidden' };
+
+      +        }
+               const containerInfo = await findContainer(instanceId);
+       
+               if (!containerInfo || !containerInfo.State.Running) {
+      @@ -147,8 +174,19 @@
+                   text: t.String(),
+               })
+           })
+      -    .delete('/instances/:id', async ({ params, set }) => {
+
+      +    .delete('/instances/:id', async ({ params, set, user }) => {
+               const instanceId = parseInt(params.id, 10);
+      +
+
+      +        // Ownership check
+
+      +        const [instance] = await db.select({ userId:
+      schema.instances.userId
+      }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+
+      +        if (!instance) {
+
+      +            set.status = 404;
+
+      +            return { error: 'Instance not found' };
+
+      +        }
+
+      +        if (instance.userId !== user.id) {
+
+      +            set.status = 403;
+
+      +            return { error: 'Forbidden' };
+
+      +        }
+       
+               try {
+                   await stopAndRemoveContainer(instanceId);
+
+    patchStrategy: standard-diff
+snapshot:
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, findContainer, stopAndRemoveContainer }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    const API_SECRET = process.env.API_SECRET;
+
+    if (!API_SECRET) {
+      throw new Error("API_SECRET is not set");
+    }
+
+
+    // A simple proxy to fetch data from a container
+
+    async function proxyToContainer(containerIp: string, path: string, options?:
+    RequestInit) {
+        const url = `http://${containerIp}:8080${path}`;
+        try {
+            const response = await fetch(url, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${url}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Simple bearer token auth
+        .onBeforeHandle(({ headers, set }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !== API_SECRET) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set }) => {
+            // TODO: Tie to an authenticated user
+            // For now, assuming user with ID 1 exists and is the only user.
+            const [newInstance] = await db.insert(schema.instances).values({
+                userId: 1, 
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                    provider: newInstance.provider,
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                phone: t.String(),
+                provider: t.Enum(schema.providerEnum),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set }) => {
+            const instanceId = parseInt(params.id, 10);
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const qrResponse = await proxyToContainer(ip, '/qr');
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            }
+            
+            return { qr: await qrResponse.text() };
+        })
+        .post('/instances/:id/send', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.id, 10);
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const sendResponse = await proxyToContainer(ip, '/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            try {
+                await stopAndRemoveContainer(instanceId);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+      )
+      .listen(3000);
+
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+approved: true
+linesAdded: 55
+linesRemoved: 15
+linesDifference: 70
+gitCommittedAt: null
+status: committed
+id: 4

@@ -1,0 +1,619 @@
+uuid: a63d1225-7833-4f93-b883-85579294e3e3
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-17T14:40:03.012Z'
+gitCommitMsg: >-
+  feat(gateway): Add internal API for state management
+
+  Introduced a new set of internal endpoints (`/internal/state`) to manage
+  provider session state, decoupling providers from the database.
+
+  - Added `instance_state` table to the database schema to store
+    key-value session data.
+  - Implemented secure CRUD endpoints for state, authenticated via a new
+    `INTERNAL_API_SECRET`.
+  - State values are transported as base64-encoded strings. - This provides the
+  foundation for stateless provider containers and
+    zero-downtime migrations.
+promptSummary: Execute Part 3 of the plan to create an internal state management API.
+reasoning:
+  - >-
+    Executing Part 3 of the plan: Creating an Internal State Management API
+    within the gateway.
+  - >-
+    This crucial step decouples the providers from the database, centralizing
+    all state logic and enhancing security.
+  - '### Step 1: Create `instance_state` Table Schema'
+  - >-
+    First, I'll update `drizzle/schema.ts` to include a new table,
+    `instanceState`. This table will store arbitrary key-value session data for
+    each instance, with a foreign key linking back to the `instances` table.
+    This ensures that when an instance is deleted, all its associated state is
+    automatically cleaned up. I've also added the necessary relations for
+    Drizzle ORM.
+  - '### Step 2: Build Internal CRUD Endpoints'
+  - >-
+    Next, I'll add a new set of secure, internal-only API endpoints to
+    `gateway/src/index.ts`. These endpoints will handle all Create, Read,
+    Update, and Delete (CRUD) operations for instance state. Access is
+    restricted by a new `INTERNAL_API_SECRET`, which provider containers will
+    use to authenticate. State data (the `value`) is expected to be
+    base64-encoded for safe transport over JSON.
+  - '### Step 3: Update Environment Configuration'
+  - >-
+    Finally, I'll add the new `INTERNAL_API_SECRET` to the example environment
+    file.
+  - >-
+    With these changes, the gateway is now equipped with a secure, centralized
+    state management API. The next step will be to refactor the `whatsmeow`
+    provider to use these endpoints instead of a local file.
+  - >-
+    **Important**: After applying these changes, you will need to generate and
+    run a new database migration:
+  - '`bun run db:generate`'
+  - '`bun run db:migrate`'
+operations:
+  - type: write
+    path: drizzle/schema.ts
+    content: >
+      --- drizzle/schema.ts
+
+      +++ drizzle/schema.ts
+
+      @@ -1,4 +1,4 @@
+
+      -import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex,
+      pgEnum } from 'drizzle-orm/pg-core';
+
+      +import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex,
+      pgEnum, bytea, primaryKey } from 'drizzle-orm/pg-core';
+       import { relations } from 'drizzle-orm';
+       
+       export const users = pgTable('users', {
+      @@ -26,16 +26,34 @@
+           };
+       });
+       
+      +export const instanceState = pgTable('instance_state', {
+
+      +  instanceId: integer('instance_id').notNull().references(() =>
+      instances.id, { onDelete: 'cascade' }),
+
+      +  key: varchar('key', { length: 255 }).notNull(),
+
+      +  value: bytea('value').notNull(),
+
+      +}, (table) => {
+
+      +    return {
+
+      +      pk: primaryKey({ columns: [table.instanceId, table.key] }),
+
+      +    };
+
+      +});
+
+      +
+       export const userRelations = relations(users, ({ many }) => ({
+         instances: many(instances),
+       }));
+       
+      -export const instanceRelations = relations(instances, ({ one }) => ({
+
+      +export const instanceRelations = relations(instances, ({ one, many }) =>
+      ({
+         user: one(users, {
+           fields: [instances.userId],
+           references: [users.id],
+         }),
+      +  state: many(instanceState),
+       }));
+       
+      +export const instanceStateRelations = relations(instanceState, ({ one })
+      => ({
+
+      +    instance: one(instances, {
+
+      +        fields: [instanceState.instanceId],
+
+      +        references: [instances.id],
+
+      +    }),
+
+      +}));
+
+      +
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/src/index.ts
+    content: >+
+      --- gateway/src/index.ts
+
+      +++ gateway/src/index.ts
+
+      @@ -1,6 +1,6 @@
+       import { Elysia, t } from 'elysia';
+       import { drizzle } from 'drizzle-orm/postgres-js';
+      -import { eq } from 'drizzle-orm';
+
+      +import { eq, and } from 'drizzle-orm';
+       import postgres from 'postgres';
+       import * as schema from '../../drizzle/schema';
+       import { createAndStartContainer, findContainer, stopAndRemoveContainer } from './docker.service';
+      @@ -12,6 +12,11 @@
+       
+       const client = postgres(connectionString);
+       const db = drizzle(client, { schema });
+      +
+
+      +const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
+
+      +if (!INTERNAL_API_SECRET) {
+
+      +  throw new Error("INTERNAL_API_SECRET is not set");
+
+      +}
+       
+       // A simple proxy to fetch data from a container
+       async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
+      @@ -176,9 +181,87 @@
+                   return { error: 'Failed to delete instance' };
+               }
+           })
+      -  )
+
+      +  ) // end of /api group
+
+      +  .group('/internal', (app) => app
+
+      +    .onBeforeHandle(({ headers, set }) => {
+
+      +        const auth = headers['x-internal-secret'];
+
+      +        if (!auth || auth !== INTERNAL_API_SECRET) {
+
+      +            set.status = 401;
+
+      +            return { error: 'Unauthorized internal request' };
+
+      +        }
+
+      +    })
+
+      +    .get('/state/:instanceId', async ({ params }) => {
+
+      +        const instanceId = parseInt(params.instanceId, 10);
+
+      +        const states = await db.select()
+
+      +            .from(schema.instanceState)
+
+      +            .where(eq(schema.instanceState.instanceId, instanceId));
+
+      +        
+
+      +        return states.map(s => ({ key: s.key, value:
+      s.value.toString('base64') }));
+
+      +    }, {
+
+      +        params: t.Object({ instanceId: t.Numeric() })
+
+      +    })
+
+      +    .get('/state/:instanceId/:key', async ({ params, set }) => {
+
+      +        const instanceId = parseInt(params.instanceId, 10);
+
+      +        const [state] = await db.select()
+
+      +            .from(schema.instanceState)
+
+      +            .where(and(
+
+      +                eq(schema.instanceState.instanceId, instanceId),
+
+      +                eq(schema.instanceState.key, params.key)
+
+      +            ));
+
+      +        
+
+      +        if (!state) {
+
+      +            set.status = 404;
+
+      +            return { error: 'State not found' };
+
+      +        }
+
+      +        
+
+      +        return { key: state.key, value: state.value.toString('base64') };
+
+      +    }, {
+
+      +        params: t.Object({
+
+      +            instanceId: t.Numeric(),
+
+      +            key: t.String()
+
+      +        })
+
+      +    })
+
+      +    .post('/state', async ({ body, set }) => {
+
+      +        const { instanceId, key, value } = body;
+
+      +        
+
+      +        const valueBuffer = Buffer.from(value, 'base64'); 
+
+      +
+
+      +        await db.insert(schema.instanceState)
+
+      +            .values({ instanceId, key, value: valueBuffer })
+
+      +            .onConflictDoUpdate({
+
+      +                target: [schema.instanceState.instanceId,
+      schema.instanceState.key],
+
+      +                set: { value: valueBuffer }
+
+      +            });
+
+      +
+
+      +        set.status = 204;
+
+      +    }, {
+
+      +        body: t.Object({
+
+      +            instanceId: t.Numeric(),
+
+      +            key: t.String(),
+
+      +            value: t.String(), // base64 encoded string
+
+      +        })
+
+      +    })
+
+      +    .delete('/state/:instanceId/:key', async ({ params, set }) => {
+
+      +        const instanceId = parseInt(params.instanceId, 10);
+
+      +        await db.delete(schema.instanceState)
+
+      +            .where(and(
+
+      +                eq(schema.instanceState.instanceId, instanceId),
+
+      +                eq(schema.instanceState.key, params.key)
+
+      +            ));
+
+      +        
+
+      +        set.status = 204;
+
+      +    }, {
+
+      +        params: t.Object({
+
+      +            instanceId: t.Numeric(),
+
+      +            key: t.String()
+
+      +        })
+
+      +    })
+
+      +  ) // end of /internal group
+         .listen(3000);
+       
+       console.log(
+
+    patchStrategy: standard-diff
+  - type: write
+    path: .env.example
+    content: |
+      <<<<<<< SEARCH
+      API_SECRET="your-super-secret-api-key"
+      =======
+      API_SECRET="your-super-secret-api-key"
+      INTERNAL_API_SECRET="a-different-super-secret-key-for-internal-services"
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+snapshot:
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, findContainer, stopAndRemoveContainer }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    // A simple proxy to fetch data from a container
+
+    async function proxyToContainer(containerIp: string, path: string, options?:
+    RequestInit) {
+        const url = `http://${containerIp}:8080${path}`;
+        try {
+            const response = await fetch(url, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${url}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Resolve user from API Key
+        .resolve(async ({ headers }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ')) {
+                return { user: null };
+            }
+            const apiKey = auth.substring(7);
+            if (!apiKey) {
+                return { user: null };
+            }
+            const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+            
+            return { user: user || null };
+        })
+        // Simple bearer token auth
+        .onBeforeHandle(({ user, set }) => {
+            if (!user) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set, user }) => {
+            // user is guaranteed to be non-null by the onBeforeHandle guard.
+            const [newInstance] = await db.insert(schema.instances).values({
+                userId: user.id, 
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                    provider: newInstance.provider,
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                phone: t.String(),
+                provider: t.Enum(schema.providerEnum),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const qrResponse = await proxyToContainer(ip, '/qr');
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            }
+            
+            return { qr: await qrResponse.text() };
+        })
+        .post('/instances/:id/send', async ({ params, body, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+            const containerInfo = await findContainer(instanceId);
+
+            if (!containerInfo || !containerInfo.State.Running) {
+                set.status = 404;
+                return { error: 'Instance container not found or not running' };
+            }
+            const ip = containerInfo.NetworkSettings.IPAddress;
+            if (!ip) {
+                 set.status = 500;
+                 return { error: "Could not determine container IP address." };
+            }
+
+            const sendResponse = await proxyToContainer(ip, '/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+            if (!instance) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (instance.userId !== user.id) {
+                set.status = 403;
+                return { error: 'Forbidden' };
+            }
+
+            try {
+                await stopAndRemoveContainer(instanceId);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+      )
+      .listen(3000);
+
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+  .env.example: |-
+    DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+    API_SECRET="your-super-secret-api-key"
+  drizzle/schema.ts: >-
+    import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex,
+    pgEnum } from 'drizzle-orm/pg-core';
+
+    import { relations } from 'drizzle-orm';
+
+
+    export const users = pgTable('users', {
+      id: serial('id').primaryKey(),
+      email: varchar('email', { length: 256 }).notNull().unique(),
+      apiKey: text('api_key').notNull().unique(),
+      createdAt: timestamp('created_at').defaultNow().notNull(),
+    });
+
+
+    export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys',
+    'wawebjs', 'waba']);
+
+    export const instanceStatusEnum = pgEnum('status', ['creating', 'starting',
+    'running', 'stopped', 'error']);
+
+
+    export const instances = pgTable('instances', {
+        id: serial('id').primaryKey(),
+        userId: integer('user_id').notNull().references(() => users.id),
+        phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
+        provider: providerEnum('provider').notNull(),
+        webhookUrl: text('webhook_url'),
+        status: instanceStatusEnum('status').default('creating').notNull(),
+        cpuLimit: varchar('cpu_limit', { length: 10 }).default('0.5'), // e.g., "0.5"
+        memoryLimit: varchar('memory_limit', { length: 10 }).default('512m'), // e.g., "512m"
+        createdAt: timestamp('created_at').defaultNow().notNull(),
+      }, (table) => {
+        return {
+          userPhoneIdx: uniqueIndex('user_phone_idx').on(table.userId, table.phoneNumber),
+        };
+    });
+
+
+    export const userRelations = relations(users, ({ many }) => ({
+      instances: many(instances),
+    }));
+
+
+    export const instanceRelations = relations(instances, ({ one }) => ({
+      user: one(users, {
+        fields: [instances.userId],
+        references: [users.id],
+      }),
+    }));
+approved: false
+linesAdded: null
+linesRemoved: null
+linesDifference: null
+gitCommittedAt: null
+status: undone
+id: 5

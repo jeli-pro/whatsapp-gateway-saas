@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import postgres from 'postgres';
 import * as schema from '../../drizzle/schema';
 import { createAndStartContainer, findContainer, stopAndRemoveContainer } from './docker.service';
@@ -12,11 +12,6 @@ if (!connectionString) {
 
 const client = postgres(connectionString);
 const db = drizzle(client, { schema });
-
-const API_SECRET = process.env.API_SECRET;
-if (!API_SECRET) {
-  throw new Error("API_SECRET is not set");
-}
 
 // A simple proxy to fetch data from a container
 async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
@@ -34,19 +29,31 @@ async function proxyToContainer(containerIp: string, path: string, options?: Req
 const app = new Elysia()
   .get('/', () => ({ status: 'ok' }))
   .group('/api', (app) => app
-    // Simple bearer token auth
-    .onBeforeHandle(({ headers, set }) => {
+    // Resolve user from API Key
+    .resolve(async ({ headers }) => {
         const auth = headers['authorization'];
-        if (!auth || !auth.startsWith('Bearer ') || auth.substring(7) !== API_SECRET) {
+        if (!auth || !auth.startsWith('Bearer ')) {
+            return { user: null };
+        }
+        const apiKey = auth.substring(7);
+        if (!apiKey) {
+            return { user: null };
+        }
+        const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+        
+        return { user: user || null };
+    })
+    // Simple bearer token auth
+    .onBeforeHandle(({ user, set }) => {
+        if (!user) {
             set.status = 401;
             return { error: 'Unauthorized' };
         }
     })
-    .post('/instances', async ({ body, set }) => {
-        // TODO: Tie to an authenticated user
-        // For now, assuming user with ID 1 exists and is the only user.
+    .post('/instances', async ({ body, set, user }) => {
+        // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
-            userId: 1, 
+            userId: user.id, 
             phoneNumber: body.phone,
             provider: body.provider,
             webhookUrl: body.webhook,
@@ -66,6 +73,7 @@ const app = new Elysia()
                 webhookUrl: newInstance.webhookUrl || '',
                 cpuLimit: newInstance.cpuLimit || '0.5',
                 memoryLimit: newInstance.memoryLimit || '512m',
+                provider: newInstance.provider,
             });
             const [updatedInstance] = await db.update(schema.instances)
                 .set({ status: 'running' })
@@ -91,8 +99,19 @@ const app = new Elysia()
             }))
         })
     })
-    .get('/instances/:id/qr', async ({ params, set }) => {
+    .get('/instances/:id/qr', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
         const containerInfo = await findContainer(instanceId);
 
         if (!containerInfo || !containerInfo.State.Running) {
@@ -118,8 +137,19 @@ const app = new Elysia()
         
         return { qr: await qrResponse.text() };
     })
-    .post('/instances/:id/send', async ({ params, body, set }) => {
+    .post('/instances/:id/send', async ({ params, body, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
         const containerInfo = await findContainer(instanceId);
 
         if (!containerInfo || !containerInfo.State.Running) {
@@ -150,8 +180,19 @@ const app = new Elysia()
             text: t.String(),
         })
     })
-    .delete('/instances/:id', async ({ params, set }) => {
+    .delete('/instances/:id', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
 
         try {
             await stopAndRemoveContainer(instanceId);
@@ -162,6 +203,114 @@ const app = new Elysia()
             set.status = 500;
             return { error: 'Failed to delete instance' };
         }
+    })
+  )
+  // New internal API group for state management
+  .group('/internal', (app) => app
+    .onBeforeHandle(({ headers, set }) => {
+        const internalSecret = process.env.INTERNAL_API_SECRET;
+        if (!internalSecret) {
+            console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+            set.status = 503;
+            return { error: 'Service Unavailable' };
+        }
+        if (headers['x-internal-secret'] !== internalSecret) {
+            set.status = 401;
+            return { error: 'Unauthorized' };
+        }
+    })
+    .get('/state/:instanceId', async ({ params }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const states = await db.select({
+            key: schema.instanceState.key,
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+        
+        return states;
+    })
+    .get('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        ));
+
+        if (!state) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        return state.value; // Return raw value
+    })
+    .post('/state/:instanceId', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const { key, value } = body;
+        
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key, value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+        
+        set.status = 204;
+    }, {
+        body: t.Object({
+            key: t.String(),
+            value: t.String(),
+        })
+    })
+    .delete('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const result = await db.delete(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        )).returning();
+
+        if (result.length === 0) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        
+        set.status = 204;
+    })
+    .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, 'session_snapshot')
+        ));
+
+        if (!state || !state.value) {
+            set.status = 404;
+            return { error: 'Snapshot not found' };
+        }
+        // The value is base64 encoded text, decode it and return as binary
+        set.headers['Content-Type'] = 'application/octet-stream';
+        return Buffer.from(state.value, 'base64');
+    })
+    .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        
+        // The body is raw bytes, we need to base64 encode it for storing in text field
+        const bodyBuffer = await Bun.readableStreamToBuffer(body as ReadableStream);
+        const value = bodyBuffer.toString('base64');
+
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key: 'session_snapshot', value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+        
+        set.status = 204;
+    }, {
+        // Allow any content type as we are reading the raw body
+        type: 'none',
+        body: t.Any(),
     })
   )
   .listen(3000);

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -30,6 +31,102 @@ var waLogger waLog.Logger
 var qrCodeStr string
 var qrCodeMutex sync.RWMutex
 var startTime = time.Now()
+
+// --- State Snapshotting ---
+var (
+	gatewayURL      = os.Getenv("GATEWAY_URL")
+	instanceID      = os.Getenv("INSTANCE_ID")
+	internalAPISecret = os.Getenv("INTERNAL_API_SECRET")
+	dbPath          = "/app/session/whatsmeow.db"
+)
+
+func fetchStateSnapshot() error {
+	if gatewayURL == "" || instanceID == "" || internalAPISecret == "" {
+		waLogger.Warnf("State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET")
+		return nil
+	}
+	url := fmt.Sprintf("%s/internal/state/%s/snapshot", gatewayURL, instanceID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot fetch request: %w", err)
+	}
+	req.Header.Set("X-Internal-Secret", internalAPISecret)
+
+	waLogger.Infof("Fetching state snapshot from %s", url)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute snapshot fetch request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		waLogger.Infof("No existing state snapshot found. Starting fresh.")
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch snapshot, status: %s", resp.Status)
+	}
+
+	// Ensure session directory exists
+	if err := os.MkdirAll("/app/session", 0755); err != nil {
+		return fmt.Errorf("failed to create session directory: %w", err)
+	}
+
+	file, err := os.Create(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to create database file: %w", err)
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write snapshot to file: %w", err)
+	}
+	waLogger.Infof("Successfully restored state snapshot.")
+	return nil
+}
+
+func uploadStateSnapshot() {
+	if gatewayURL == "" || instanceID == "" || internalAPISecret == "" {
+		waLogger.Warnf("State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET")
+		return
+	}
+
+	fileData, err := os.ReadFile(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			waLogger.Warnf("Database file not found at %s, nothing to snapshot.", dbPath)
+			return
+		}
+		waLogger.Errorf("Failed to read database file for snapshotting: %v", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/internal/state/%s/snapshot", gatewayURL, instanceID)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(fileData))
+	if err != nil {
+		waLogger.Errorf("Failed to create snapshot upload request: %v", err)
+		return
+	}
+	req.Header.Set("X-Internal-Secret", internalAPISecret)
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	waLogger.Infof("Uploading state snapshot to %s", url)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		waLogger.Errorf("Failed to execute snapshot upload request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		waLogger.Errorf("Failed to upload snapshot, status: %s", resp.Status)
+	} else {
+		waLogger.Infof("Successfully uploaded state snapshot.")
+	}
+}
+
+// --- End State Snapshotting ---
 
 type webhookPayload struct {
 	Event string      `json:"event"`
@@ -198,8 +295,15 @@ func main() {
 	waLogger = waLog.Stdout("main", "INFO", true)
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
+	// Fetch state from gateway before initializing DB connection
+	if err := fetchStateSnapshot(); err != nil {
+		// We panic here because a failed restore could lead to data loss
+		// or an inconsistent state. It's safer to fail hard.
+		panic(fmt.Errorf("critical error during state restoration: %w", err))
+	}
+
 	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite3", "file:/app/session/whatsmeow.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", dbPath), dbLog)
 	if err != nil {
 		panic(err)
 	}
@@ -247,5 +351,8 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
+	waLogger.Infof("Received shutdown signal. Uploading state snapshot...")
+	uploadStateSnapshot()
 	client.Disconnect()
+	waLogger.Infof("Disconnected. Goodbye.")
 }
