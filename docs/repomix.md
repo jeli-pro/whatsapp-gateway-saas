@@ -306,5 +306,5 @@ Let me know if you want a Kubernetes Helm chart or Terraform module next.
 ````markdown
 ====
 
-understand readme.md then plan!
+understand readme.md then plan! proritize the whatsmeow provider first
 ````

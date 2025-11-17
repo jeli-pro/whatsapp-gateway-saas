@@ -1,21 +1,22 @@
 # WhatsApp API Gateway SaaS
 
-A scalable, multi-provider WhatsApp API gateway that supports **tulir/whatsmeow**, **Baileys**, **whatsapp-web.js**, and **WhatsApp Business API (WABA)**. Each phone number runs in its own Docker container, managed by a central Cloudflare-powered control plane with seamless VPS migration and zero-downtime session persistence.
+A scalable, multi-provider WhatsApp API gateway that supports **tulir/whatsmeow**, **Baileys**, **whatsapp-web.js**, and **WhatsApp Business API (WABA)**. Each phone number runs in its own Docker container, managed by a central **Bun-powered** control plane with seamless VPS migration and zero-downtime session persistence.
 
 ---
 
 ## 🚀 Features
 
-- **Multi-Provider Support**: Choose between:
+- **Multi-Provider Support**:
   - [tulir/whatsmeow](https://github.com/tulir/whatsmeow) (Go)
   - [Baileys](https://github.com/WhiskeySockets/Baileys) (TypeScript)
   - [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) (Node.js)
   - [WhatsApp Business API (WABA)](https://developers.facebook.com/docs/whatsapp/business-management-api) (Official)
 
 - **One Container = One Number**: Each WhatsApp number is isolated in its own Docker container.
-- **Zero-Downtime Migration**: Move containers across VPS nodes without losing session state or requiring re-login.
+- **Resource Limiting**: Set CPU and RAM limits per container to prevent noisy neighbors and ensure fair usage.
+- **Zero-Downtime Migration**: Move containers across VPS nodes without losing session state.
 - **Cloudflare Tunnel Integration**: Secure, scalable ingress without exposing VPS IPs.
-- **State Persistence**: Sessions are backed up to a central database and restored on migration.
+- **State Persistence**: Sessions backed up to a central database (PostgreSQL + Drizzle ORM).
 - **RESTful API**: Unified API across all providers.
 - **Webhook Support**: Real-time message and status callbacks.
 - **Multi-Tenant**: SaaS-ready with user isolation and billing hooks.
@@ -33,9 +34,10 @@ A scalable, multi-provider WhatsApp API gateway that supports **tulir/whatsmeow*
            v
 +---------------------+
 |  Gateway Controller |
-|  (Node.js/Go)       |
+|  (Bun.sh / Go)      |
 |  - API Layer        |
 |  - DB (PostgreSQL)  |
+|  - Drizzle ORM      |
 |  - Queue (Redis)    |
 +----------+----------+
            |
@@ -44,6 +46,7 @@ A scalable, multi-provider WhatsApp API gateway that supports **tulir/whatsmeow*
 |  Docker Swarm       |
 |  or Kubernetes      |
 |  - Per-number pods  |
+|  - Resource limits  |
 |  - Volume snapshots |
 +----------+----------+
            |
@@ -81,21 +84,8 @@ cd whatsapp-gateway-saas
 
 ```bash
 cp .env.example .env
-nano .env
-```
-
-```env
-# Core
-DB_URL=postgres://user:pass@db:5432/whatsapp_gateway
-REDIS_URL=redis://redis:6379
-CF_TUNNEL_TOKEN=your-cloudflare-tunnel-token
-API_SECRET=your-api-secret-key
-
-# Providers (enable/disable)
-ENABLE_WHATSMEOW=true
-ENABLE_BAILEYS=true
-ENABLE_WAWEBJS=true
-ENABLE_WABA=true
+# Edit .env with your credentials
+bun install
 ```
 
 ### 3. Start the stack
@@ -104,7 +94,13 @@ ENABLE_WABA=true
 docker compose up -d
 ```
 
-### 4. Create a new instance
+### 4. Run migrations
+
+```bash
+bun run db:migrate
+```
+
+### 5. Create a new instance
 
 ```bash
 curl -X POST https://your-domain.com/api/instances \
@@ -112,11 +108,15 @@ curl -X POST https://your-domain.com/api/instances \
   -d '{
     "phone": "1234567890",
     "provider": "baileys",
-    "webhook": "https://your-app.com/webhook"
+    "webhook": "https://your-app.com/webhook",
+    "resources": {
+      "cpu": "0.5",
+      "memory": "512m"
+    }
   }'
 ```
 
-### 5. Scan QR Code
+### 6. Scan QR Code
 
 ```bash
 curl https://your-domain.com/api/instances/1234567890/qr
@@ -151,13 +151,13 @@ curl -X POST https://your-domain.com/api/instances/1234567890/migrate \
 
 ```
 whatsapp-gateway-saas/
-├── gateway/              # Central API controller
+├── gateway/              # Central API controller (Bun.sh)
 ├── providers/
 │   ├── whatsmeow/
 │   ├── baileys/
 │   ├── wawebjs/
 │   └── waba/
-├── migrations/           # DB schemas
+├── drizzle/              # Drizzle ORM schemas + migrations
 ├── scripts/
 │   ├── backup.sh
 │   ├── restore.sh
@@ -204,16 +204,6 @@ curl -X POST https://your-domain.com/api/instances/1234567890/send \
   }'
 ```
 
-### Send Media
-
-```bash
-curl -X POST https://your-domain.com/api/instances/1234567890/send \
-  -H "Authorization: Bearer $API_SECRET" \
-  -F 'to=919876543210' \
-  -F 'type=image' \
-  -F 'file=@/path/to/image.jpg'
-```
-
 ---
 
 ## 🧩 Webhook Payload
@@ -233,60 +223,28 @@ curl -X POST https://your-domain.com/api/instances/1234567890/send \
 
 ---
 
-## 🧑‍💻 Development
-
-### Add a new provider
-
-1. Create folder under `providers/`
-2. Implement interface:
-
-```ts
-interface Provider {
-  start(): Promise<void>
-  stop(): Promise<void>
-  sendMessage(msg: Message): Promise<void>
-  getQR(): Promise<string>
-  restoreSession(state: string): Promise<void>
-  backupSession(): Promise<string>
-}
-```
-
-3. Register in `gateway/providers/index.ts`
-
----
-
 ## 📈 Scaling
 
-- Use Docker Swarm or Kubernetes
-- Enable volume snapshots (e.g., Restic, Velero)
-- Use Redis for session caching
-- Use PostgreSQL with replicas
-- Use Cloudflare Load Balancer for global failover
+- Use Docker Swarm or Kubernetes for orchestration.
+- Set resource limits on containers to manage costs and prevent abuse.
+- Use a managed PostgreSQL (e.g., Neon, Supabase) and Redis.
+- Use Cloudflare Load Balancer for global failover.
 
 ---
 
 ## 📜 License
 
-MIT License — see [LICENSE](LICENSE)
-
----
-
-## 🤝 Contributing
-
-PRs welcome. Please open an issue first for large changes.
+MIT
 
 ---
 
 ## ⚠️ Disclaimer
 
-This project is for **legitimate business use only**. Misuse (spam, abuse, etc.) may result in bans from WhatsApp. You are responsible for complying with [WhatsApp Terms of Service](https://www.whatsapp.com/legal/).
+This is not an official WhatsApp product. Use it for legitimate purposes only. Spamming will get your numbers banned. You are responsible for complying with WhatsApp's ToS.
 
 ---
 
 ## 📞 Support
 
 - Discord: [https://discord.gg/your-server](https://discord.gg/your-server)
-- Email: support@your-domain.com
-```
-
-Let me know if you want a Kubernetes Helm chart or Terraform module next.
+- Issues via GitHub.
