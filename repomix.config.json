@@ -6,8 +6,8 @@
   "output": {
     "filePath": "docs/repomix.md",
     "style": "markdown",
-    "parsableStyle": false,
-    "fileSummary": true,
+    "parsableStyle": true,
+    "fileSummary": false,
     "directoryStructure": true,
     "files": true,
     "removeComments": false,
@@ -15,7 +15,7 @@
     "compress": false,
     "topFilesLength": 5,
     "showLineNumbers": false,
-    "copyToClipboard": false,
+    "copyToClipboard": true,
     "git": {
       "sortByChanges": true,
       "sortByChangesMaxCommits": 100,
@@ -26,7 +26,7 @@
   "ignore": {
     "useGitignore": true,
     "useDefaultPatterns": true,
-    "customPatterns": []
+    "customPatterns": [".gitignore", ".repomixignore", ".relay"]
   },
   "security": {
     "enableSecurityCheck": true
