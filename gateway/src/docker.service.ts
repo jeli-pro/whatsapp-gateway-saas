@@ -1,7 +1,5 @@
-import Docker from 'dockerode';
+// Simple Docker service using Bun.shell for compatibility
 
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
- 
 function getImageForProvider(provider: string): string {
     // In a real scenario, this could come from a config file or database
     const imageMap: Record<string, string> = {
@@ -13,6 +11,18 @@ function getImageForProvider(provider: string): string {
         throw new Error(`Unsupported provider: ${provider}`);
     }
     return image;
+}
+
+interface DockerContainer {
+    Id: string;
+    Name: string;
+    State: {
+        Running: boolean;
+        Status: string;
+    };
+    NetworkSettings: {
+        IPAddress: string;
+    };
 }
 
 interface CreateContainerOptions {
@@ -28,55 +38,66 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     console.log(`Creating container ${containerName}`);
 
     const DOCKER_IMAGE = getImageForProvider(options.provider);
-    // First, try to pull the image to ensure it's up to date
+
+    // Pull the image first
     await pullImage(DOCKER_IMAGE);
 
     const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
     const internalApiSecret = process.env.INTERNAL_API_SECRET;
 
-    const container = await docker.createContainer({
-        Image: DOCKER_IMAGE,
-        name: containerName,
-        Env: [
-            `INSTANCE_ID=${options.instanceId}`,
-            `GATEWAY_URL=${gatewayUrl}`,
-            `INTERNAL_API_SECRET=${internalApiSecret}`,
-            `WEBHOOK_URL=${options.webhookUrl}`
-        ],
-        HostConfig: {
-            // Restart unless manually stopped
-            RestartPolicy: {
-                Name: 'unless-stopped',
-            },
-            // Resource limits
-            NanoCpus: Math.floor(parseFloat(options.cpuLimit) * 1e9), // e.g. 0.5 -> 500000000
-            Memory: parseMemory(options.memoryLimit), // e.g. "512m" -> 536870912
-        },
-        Labels: {
-            'whatsapp-gateway-saas.instance-id': String(options.instanceId),
-        }
-    });
+    // Create and start container using docker CLI
+    const dockerCmd = `docker run -d \
+        --name ${containerName} \
+        --restart unless-stopped \
+        --cpus="${options.cpuLimit}" \
+        --memory="${options.memoryLimit}" \
+        -e INSTANCE_ID="${options.instanceId}" \
+        -e GATEWAY_URL="${gatewayUrl}" \
+        -e INTERNAL_API_SECRET="${internalApiSecret}" \
+        -e WEBHOOK_URL="${options.webhookUrl}" \
+        -l "whatsapp-gateway-saas.instance-id=${options.instanceId}" \
+        ${DOCKER_IMAGE}`;
 
-    console.log(`Starting container ${container.id}`);
-    await container.start();
+    console.log(`Running: ${dockerCmd}`);
+    const dockerProcess = Bun.spawn(["sh", "-c", dockerCmd]);
+    const result = await new Response(dockerProcess.stdout).text();
 
-    return container;
+    // Wait for process to complete and check exit code
+    await dockerProcess.exited;
+    if (dockerProcess.exitCode !== 0) {
+        const stderr = await new Response(dockerProcess.stderr).text();
+        throw new Error(`Failed to create container: ${stderr}`);
+    }
+
+    const containerId = result.trim();
+    console.log(`Container started with ID: ${containerId}`);
+
+    return { Id: containerId };
 }
 
 export async function stopAndRemoveContainer(instanceId: number) {
     const containerName = `instance-${instanceId}`;
     try {
-        const container = docker.getContainer(containerName);
-        const inspect = await container.inspect();
-        if (inspect.State.Running) {
-            console.log(`Stopping container ${containerName}`);
-            await container.stop();
+        // Check if container exists
+        const container = await findContainer(instanceId);
+        if (!container) {
+            console.log(`Container ${containerName} not found, nothing to do.`);
+            return true;
         }
-        console.log(`Removing container ${containerName}`);
-        await container.remove();
+
+        const containerId = container.Id;
+
+        // Stop and remove container
+        console.log(`Stopping and removing container ${containerName}`);
+        const stopProcess = Bun.spawn(["sh", "-c", `docker stop ${containerName}`]);
+        await stopProcess.exited;
+
+        const rmProcess = Bun.spawn(["sh", "-c", `docker rm ${containerName}`]);
+        await rmProcess.exited;
+
         return true;
     } catch (error: any) {
-        if (error.statusCode === 404) {
+        if (error.message.includes('No such container')) {
             console.log(`Container ${containerName} not found, nothing to do.`);
             return true;
         }
@@ -85,48 +106,50 @@ export async function stopAndRemoveContainer(instanceId: number) {
     }
 }
 
-export async function findContainer(instanceId: number) {
+export async function findContainer(instanceId: number): Promise<DockerContainer | null> {
     try {
-        const container = docker.getContainer(`instance-${instanceId}`);
-        return await container.inspect();
-    } catch (error: any) {
-        if (error.statusCode === 404) {
+        const containerName = `instance-${instanceId}`;
+
+        // Get container info using docker inspect
+        const inspectProcess = Bun.spawn(["sh", "-c", `docker inspect ${containerName} 2>/dev/null || true`]);
+        const output = await new Response(inspectProcess.stdout).text();
+        await inspectProcess.exited;
+
+        if (!output || output.trim() === '[]') {
             return null;
         }
-        throw error;
+
+        const inspectData = JSON.parse(output)[0];
+        return {
+            Id: inspectData.Id,
+            Name: inspectData.Name,
+            State: {
+                Running: inspectData.State.Running,
+                Status: inspectData.State.Status,
+            },
+            NetworkSettings: {
+                IPAddress: inspectData.NetworkSettings.IPAddress,
+            }
+        };
+    } catch (error) {
+        return null;
     }
 }
 
-function pullImage(imageName: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-        console.log(`Pulling image ${imageName}...`);
-        docker.pull(imageName, (err: Error, stream: NodeJS.ReadableStream) => {
-            if (err) {
-                return reject(err);
-            }
-            docker.modem.followProgress(stream, onFinished, onProgress);
+async function pullImage(imageName: string): Promise<void> {
+    console.log(`Pulling image ${imageName}...`);
+    try {
+        const pullProcess = Bun.spawn(["sh", "-c", `docker pull ${imageName}`]);
+        const output = await new Response(pullProcess.stdout).text();
+        await pullProcess.exited;
 
-            function onFinished(err: Error | null, output: any) {
-                if (err) {
-                    return reject(err);
-                }
-                console.log(`Image ${imageName} pulled successfully.`);
-                resolve();
-            }
-            function onProgress(event: any) {
-                // You can add progress reporting here if needed
-            }
-        });
-    });
-}
-
-function parseMemory(mem: string): number {
-    const unit = mem.charAt(mem.length - 1).toLowerCase();
-    const value = parseInt(mem.slice(0, -1), 10);
-    switch (unit) {
-        case 'g': return value * 1024 * 1024 * 1024;
-        case 'm': return value * 1024 * 1024;
-        case 'k': return value * 1024;
-        default: return parseInt(mem, 10);
+        if (pullProcess.exitCode !== 0) {
+            const stderr = await new Response(pullProcess.stderr).text();
+            throw new Error(`Failed to pull image: ${stderr}`);
+        }
+        console.log(`Image ${imageName} pulled successfully.`);
+    } catch (error) {
+        console.error(`Failed to pull image ${imageName}:`, error);
+        throw error;
     }
 }

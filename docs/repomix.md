@@ -25,6 +25,320 @@ user.prompt.md
 
 # Files
 
+## File: gateway/package.json
+````json
+{
+  "name": "gateway",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/dockerode": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "drizzle-orm": "latest",
+    "postgres": "latest",
+    "dockerode": "latest"
+  }
+}
+````
+
+## File: gateway/tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "composite": true,
+    "strict": true,
+    "downlevelIteration": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "types": [
+      "bun-types"
+    ]
+  }
+}
+````
+
+## File: providers/whatsmeow/.env.example
+````
+# Application Configuration
+VERSION=dev
+BUILD_TIME=2025-01-01T00:00:00Z
+COMPOSE_PROJECT_NAME=whatsmeow
+
+# Network Configuration
+PORT=8080
+DOMAIN=localhost
+
+# Resource Limits
+CPU_LIMIT=0.5
+CPU_RESERVATION=0.1
+MEMORY_LIMIT=512M
+MEMORY_RESERVATION=128M
+
+# Application Settings
+WEBHOOK_URL=
+LOG_LEVEL=INFO
+
+# Persistence
+SESSION_VOLUME_PATH=./data/session
+````
+
+## File: providers/whatsmeow/challenges.log.md
+````markdown
+# Whatsmeow Provider Implementation - Challenges & Solutions Log
+
+## Project Overview
+Implementation of a production-ready Docker-based WhatsApp gateway provider using tulir/whatsmeow library.
+
+## Challenges Encountered & Solutions
+
+### 1. Initial Repository Structure Issues
+**Challenge**: Started with incorrect directory structure - files were being created alongside source code instead of clean Docker-only setup.
+**Solution**: Removed all source files (`src/` directory) and ensured only Docker-related files remained in the provider directory.
+
+### 2. Go Module Version Conflicts
+**Challenge**: Multiple attempts with incorrect Go module versions causing build failures:
+- `go.mau.fi/whatsmeow v0.0.0-20241001005843-c891d22a3bc7` - invalid pseudo-version
+- `go.mau.fi/whatsmeow v0.0.0-20250310142830-321653dc76a8` - invalid revision
+**Solution**: Used correct commit hash and timestamp format: `v0.0.0-20251116104239-3aca43070cd4`
+
+### 3. CGO vs Non-CGO SQLite Compilation
+**Challenge**: Initial attempt with `CGO_ENABLED=0` failed due to SQLite3 requiring CGO.
+**Solutions Attempted**:
+1. **Modern SQLite Library**: Tried `modernc.org/sqlite` but caused memory issues
+2. **CGO with Build Dependencies**: Added `gcc musl-dev` to builder stage
+3. **Runtime Dependencies**: Added `sqlite` package to final stage
+**Final Solution**: CGO_ENABLED=1 with proper build and runtime dependencies
+
+### 4. Go Version Compatibility
+**Challenge**: Multiple Go version conflicts:
+- Go 1.21: Module required Go >= 1.24
+- Go 1.23: Module required Go >= 1.24
+- Go 1.24: Final working version
+**Solution**: Updated Dockerfile to use `golang:1.24-alpine`
+
+### 5. Database Path Issues
+**Challenge**: SQLite database path errors:
+- `file:/session/whatsmeow.db` - incorrect path
+- `file:/app/session/whatsmeow.db` - correct path
+**Solution**: Updated database connection string to use `/app/session/`
+
+### 6. Directory Permissions
+**Challenge**: SQLite database creation failed due to missing directories and permissions.
+**Solution**: Added directory creation and permission setting in Dockerfile:
+```dockerfile
+RUN mkdir -p /app/session /app/logs && \
+    chown -R appuser:appgroup /app && \
+    chmod 755 /app/session
+```
+
+### 7. Container Memory Issues
+**Challenge**: Container running out of memory during SQLite operations.
+**Solution**: Increased container memory limit to 1GB during testing, but final implementation works with minimal memory (14MB).
+
+### 8. Network Connectivity Issues
+**Challenge**: Docker build failing due to network timeouts and registry issues.
+**Solution**: Multiple retry attempts and using absolute paths for Docker context.
+
+## Technical Decisions Made
+
+### Database Choice
+- **Selected**: `github.com/mattn/go-sqlite3` with CGO
+- **Rejected**: `modernc.org/sqlite` (memory issues, compatibility problems)
+
+### Go Version
+- **Selected**: Go 1.24 (latest stable with module compatibility)
+- **Rejected**: Go 1.21, 1.23 (module version conflicts)
+
+### Build Strategy
+- **Selected**: Multi-stage build with CGO support
+- **Builder Stage**: golang:1.24-alpine + build dependencies
+- **Runtime Stage**: Alpine 3.20 with minimal packages
+
+### Security Model
+- **Selected**: Non-root user with dedicated group
+- **User**: `appuser` (UID 1001)
+- **Group**: `appgroup` (GID 1001)
+- **Working Dir**: `/app` with proper permissions
+
+## Performance Metrics Achieved
+
+### Memory Usage
+- **Idle Container**: 14.27MB
+- **With Runtime Overhead**: ~25-30MB
+- **Final Image Size**: 44.3MB
+
+### Startup Performance
+- **Build Time**: ~2-3 minutes
+- **Startup Time**: ~10 seconds to ready state
+- **QR Generation**: ~3-5 seconds after startup
+
+### API Response Times
+- **Health Check**: <100ms
+- **QR Code Generation**: <500ms
+- **Database Operations**: <100ms
+
+## Docker Implementation Details
+
+### Multi-stage Build Optimization
+1. **Builder Stage**: Compiles with CGO, includes build tools
+2. **Runtime Stage**: Minimal Alpine with only required packages
+3. **Layer Caching**: Optimized for CI/CD with proper .dockerignore
+
+### Security Features
+- Non-root user execution
+- Minimal attack surface
+- Volume-based persistence
+- Health check monitoring
+
+### Production Readiness
+- Resource limits support
+- Health check endpoints
+- Structured logging
+- Graceful shutdown handling
+
+## API Endpoints Implemented
+
+### Health & Status
+- `GET /health` - Detailed health status
+- `GET /status` - Alias for health endpoint
+
+### WhatsApp Integration
+- `GET /qr` - QR code PNG for WhatsApp pairing
+- `POST /send` - Send text messages (JSON API)
+
+### Event Handling
+- Webhook support for message events
+- Connection status notifications
+- QR code generation events
+
+## Configuration Management
+
+### Environment Variables
+- `PORT` - HTTP server port (default: 8080)
+- `WEBHOOK_URL` - Event notification endpoint
+- `LOG_LEVEL` - Logging verbosity
+- `GOMAXPROCS` - Go runtime optimization
+
+### Docker Compose Features
+- Resource limits (CPU/MEM)
+- Volume persistence
+- Health check configuration
+- Network isolation
+- Environment templating
+
+## Lessons Learned
+
+### 1. CGO Complexity in Alpine
+- Alpine's musl libc requires careful CGO configuration
+- Build dependencies must be in builder stage
+- Runtime dependencies needed in final stage
+- Package naming differs between build/runtime
+
+### 2. Go Module Versioning
+- Pseudo-versions require exact commit timestamps
+- Module compatibility constraints must be respected
+- Go version requirements can be strict
+
+### 3. SQLite in Containers
+- Directory permissions are critical
+- Path resolution must account for container filesystem
+- Volume mounting for persistence is essential
+
+### 4. Multi-stage Build Optimization
+- Layer caching significantly improves CI/CD performance
+- Dependency resolution should be cached separately
+- Final image should be minimal for security
+
+### 5. Production Docker Practices
+- Non-root execution is mandatory for security
+- Health checks enable proper orchestration
+- Resource limits prevent noisy neighbor issues
+- Structured logging aids monitoring and debugging
+
+## Reproduction Checklist
+
+For future implementations, ensure:
+- [ ] Go module versions are exact matches
+- [ ] CGO dependencies are properly configured
+- [ ] Database paths use container filesystem structure
+- [ ] Directory permissions are set correctly
+- [ ] Non-root user has proper access to volumes
+- [ ] Health checks are implemented and tested
+- [ ] Resource limits are configured appropriately
+- [ ] Security scanning is performed on final image
+
+## Final Status: ✅ COMPLETE
+
+All requirements fulfilled:
+- ✅ Production-ready Docker implementation
+- ✅ Working health and QR endpoints
+- ✅ Optimal performance metrics achieved
+- ✅ Security best practices implemented
+- ✅ CI/CD pipeline compatibility
+- ✅ Resource efficiency (14MB memory, 44MB image)
+````
+
+## File: drizzle.config.ts
+````typescript
+import { defineConfig } from 'drizzle-kit';
+import 'dotenv/config';
+
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL environment variable is required');
+}
+
+export default defineConfig({
+  schema: './drizzle/schema.ts',
+  out: './drizzle/migrations',
+  dialect: 'postgresql',
+  dbCredentials: {
+    url: process.env.DATABASE_URL,
+  },
+  verbose: true,
+  strict: true,
+});
+````
+
+## File: package.json
+````json
+{
+  "name": "whatsapp-gateway-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "gateway"
+  ],
+  "scripts": {
+    "dev": "bun --cwd gateway run dev",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "drizzle-kit": "latest",
+    "dotenv": "latest"
+  }
+}
+````
+
 ## File: drizzle/schema.ts
 ````typescript
 import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
@@ -122,10 +436,16 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     // First, try to pull the image to ensure it's up to date
     await pullImage(DOCKER_IMAGE);
 
+    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
+    const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
     const container = await docker.createContainer({
         Image: DOCKER_IMAGE,
         name: containerName,
         Env: [
+            `INSTANCE_ID=${options.instanceId}`,
+            `GATEWAY_URL=${gatewayUrl}`,
+            `INTERNAL_API_SECRET=${internalApiSecret}`,
             `WEBHOOK_URL=${options.webhookUrl}`
         ],
         HostConfig: {
@@ -496,333 +816,49 @@ const app = new Elysia()
         
         set.status = 204;
     })
+    .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, 'session_snapshot')
+        ));
+
+        if (!state || !state.value) {
+            set.status = 404;
+            return { error: 'Snapshot not found' };
+        }
+        // The value is base64 encoded text, decode it and return as binary
+        set.headers['Content-Type'] = 'application/octet-stream';
+        return Buffer.from(state.value, 'base64');
+    })
+    .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        
+        // The body is raw bytes, we need to base64 encode it for storing in text field
+        const bodyBuffer = await Bun.readableStreamToBuffer(body as ReadableStream);
+        const value = bodyBuffer.toString('base64');
+
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key: 'session_snapshot', value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+        
+        set.status = 204;
+    }, {
+        // Allow any content type as we are reading the raw body
+        type: 'none',
+        body: t.Any(),
+    })
   )
   .listen(3000);
 
 console.log(
   `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
 );
-````
-
-## File: gateway/package.json
-````json
-{
-  "name": "gateway",
-  "module": "src/index.ts",
-  "type": "module",
-  "scripts": {
-    "dev": "bun --watch src/index.ts"
-  },
-  "devDependencies": {
-    "bun-types": "latest",
-    "@types/dockerode": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "elysia": "latest",
-    "drizzle-orm": "latest",
-    "postgres": "latest",
-    "dockerode": "latest"
-  }
-}
-````
-
-## File: gateway/tsconfig.json
-````json
-{
-  "compilerOptions": {
-    "lib": ["ESNext"],
-    "module": "ESNext",
-    "target": "ESNext",
-    "moduleResolution": "bundler",
-    "moduleDetection": "force",
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "composite": true,
-    "strict": true,
-    "downlevelIteration": true,
-    "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "allowSyntheticDefaultImports": true,
-    "forceConsistentCasingInFileNames": true,
-    "allowJs": true,
-    "types": [
-      "bun-types"
-    ]
-  }
-}
-````
-
-## File: providers/whatsmeow/.env.example
-````
-# Application Configuration
-VERSION=dev
-BUILD_TIME=2025-01-01T00:00:00Z
-COMPOSE_PROJECT_NAME=whatsmeow
-
-# Network Configuration
-PORT=8080
-DOMAIN=localhost
-
-# Resource Limits
-CPU_LIMIT=0.5
-CPU_RESERVATION=0.1
-MEMORY_LIMIT=512M
-MEMORY_RESERVATION=128M
-
-# Application Settings
-WEBHOOK_URL=
-LOG_LEVEL=INFO
-
-# Persistence
-SESSION_VOLUME_PATH=./data/session
-````
-
-## File: providers/whatsmeow/challenges.log.md
-````markdown
-# Whatsmeow Provider Implementation - Challenges & Solutions Log
-
-## Project Overview
-Implementation of a production-ready Docker-based WhatsApp gateway provider using tulir/whatsmeow library.
-
-## Challenges Encountered & Solutions
-
-### 1. Initial Repository Structure Issues
-**Challenge**: Started with incorrect directory structure - files were being created alongside source code instead of clean Docker-only setup.
-**Solution**: Removed all source files (`src/` directory) and ensured only Docker-related files remained in the provider directory.
-
-### 2. Go Module Version Conflicts
-**Challenge**: Multiple attempts with incorrect Go module versions causing build failures:
-- `go.mau.fi/whatsmeow v0.0.0-20241001005843-c891d22a3bc7` - invalid pseudo-version
-- `go.mau.fi/whatsmeow v0.0.0-20250310142830-321653dc76a8` - invalid revision
-**Solution**: Used correct commit hash and timestamp format: `v0.0.0-20251116104239-3aca43070cd4`
-
-### 3. CGO vs Non-CGO SQLite Compilation
-**Challenge**: Initial attempt with `CGO_ENABLED=0` failed due to SQLite3 requiring CGO.
-**Solutions Attempted**:
-1. **Modern SQLite Library**: Tried `modernc.org/sqlite` but caused memory issues
-2. **CGO with Build Dependencies**: Added `gcc musl-dev` to builder stage
-3. **Runtime Dependencies**: Added `sqlite` package to final stage
-**Final Solution**: CGO_ENABLED=1 with proper build and runtime dependencies
-
-### 4. Go Version Compatibility
-**Challenge**: Multiple Go version conflicts:
-- Go 1.21: Module required Go >= 1.24
-- Go 1.23: Module required Go >= 1.24
-- Go 1.24: Final working version
-**Solution**: Updated Dockerfile to use `golang:1.24-alpine`
-
-### 5. Database Path Issues
-**Challenge**: SQLite database path errors:
-- `file:/session/whatsmeow.db` - incorrect path
-- `file:/app/session/whatsmeow.db` - correct path
-**Solution**: Updated database connection string to use `/app/session/`
-
-### 6. Directory Permissions
-**Challenge**: SQLite database creation failed due to missing directories and permissions.
-**Solution**: Added directory creation and permission setting in Dockerfile:
-```dockerfile
-RUN mkdir -p /app/session /app/logs && \
-    chown -R appuser:appgroup /app && \
-    chmod 755 /app/session
-```
-
-### 7. Container Memory Issues
-**Challenge**: Container running out of memory during SQLite operations.
-**Solution**: Increased container memory limit to 1GB during testing, but final implementation works with minimal memory (14MB).
-
-### 8. Network Connectivity Issues
-**Challenge**: Docker build failing due to network timeouts and registry issues.
-**Solution**: Multiple retry attempts and using absolute paths for Docker context.
-
-## Technical Decisions Made
-
-### Database Choice
-- **Selected**: `github.com/mattn/go-sqlite3` with CGO
-- **Rejected**: `modernc.org/sqlite` (memory issues, compatibility problems)
-
-### Go Version
-- **Selected**: Go 1.24 (latest stable with module compatibility)
-- **Rejected**: Go 1.21, 1.23 (module version conflicts)
-
-### Build Strategy
-- **Selected**: Multi-stage build with CGO support
-- **Builder Stage**: golang:1.24-alpine + build dependencies
-- **Runtime Stage**: Alpine 3.20 with minimal packages
-
-### Security Model
-- **Selected**: Non-root user with dedicated group
-- **User**: `appuser` (UID 1001)
-- **Group**: `appgroup` (GID 1001)
-- **Working Dir**: `/app` with proper permissions
-
-## Performance Metrics Achieved
-
-### Memory Usage
-- **Idle Container**: 14.27MB
-- **With Runtime Overhead**: ~25-30MB
-- **Final Image Size**: 44.3MB
-
-### Startup Performance
-- **Build Time**: ~2-3 minutes
-- **Startup Time**: ~10 seconds to ready state
-- **QR Generation**: ~3-5 seconds after startup
-
-### API Response Times
-- **Health Check**: <100ms
-- **QR Code Generation**: <500ms
-- **Database Operations**: <100ms
-
-## Docker Implementation Details
-
-### Multi-stage Build Optimization
-1. **Builder Stage**: Compiles with CGO, includes build tools
-2. **Runtime Stage**: Minimal Alpine with only required packages
-3. **Layer Caching**: Optimized for CI/CD with proper .dockerignore
-
-### Security Features
-- Non-root user execution
-- Minimal attack surface
-- Volume-based persistence
-- Health check monitoring
-
-### Production Readiness
-- Resource limits support
-- Health check endpoints
-- Structured logging
-- Graceful shutdown handling
-
-## API Endpoints Implemented
-
-### Health & Status
-- `GET /health` - Detailed health status
-- `GET /status` - Alias for health endpoint
-
-### WhatsApp Integration
-- `GET /qr` - QR code PNG for WhatsApp pairing
-- `POST /send` - Send text messages (JSON API)
-
-### Event Handling
-- Webhook support for message events
-- Connection status notifications
-- QR code generation events
-
-## Configuration Management
-
-### Environment Variables
-- `PORT` - HTTP server port (default: 8080)
-- `WEBHOOK_URL` - Event notification endpoint
-- `LOG_LEVEL` - Logging verbosity
-- `GOMAXPROCS` - Go runtime optimization
-
-### Docker Compose Features
-- Resource limits (CPU/MEM)
-- Volume persistence
-- Health check configuration
-- Network isolation
-- Environment templating
-
-## Lessons Learned
-
-### 1. CGO Complexity in Alpine
-- Alpine's musl libc requires careful CGO configuration
-- Build dependencies must be in builder stage
-- Runtime dependencies needed in final stage
-- Package naming differs between build/runtime
-
-### 2. Go Module Versioning
-- Pseudo-versions require exact commit timestamps
-- Module compatibility constraints must be respected
-- Go version requirements can be strict
-
-### 3. SQLite in Containers
-- Directory permissions are critical
-- Path resolution must account for container filesystem
-- Volume mounting for persistence is essential
-
-### 4. Multi-stage Build Optimization
-- Layer caching significantly improves CI/CD performance
-- Dependency resolution should be cached separately
-- Final image should be minimal for security
-
-### 5. Production Docker Practices
-- Non-root execution is mandatory for security
-- Health checks enable proper orchestration
-- Resource limits prevent noisy neighbor issues
-- Structured logging aids monitoring and debugging
-
-## Reproduction Checklist
-
-For future implementations, ensure:
-- [ ] Go module versions are exact matches
-- [ ] CGO dependencies are properly configured
-- [ ] Database paths use container filesystem structure
-- [ ] Directory permissions are set correctly
-- [ ] Non-root user has proper access to volumes
-- [ ] Health checks are implemented and tested
-- [ ] Resource limits are configured appropriately
-- [ ] Security scanning is performed on final image
-
-## Final Status: ✅ COMPLETE
-
-All requirements fulfilled:
-- ✅ Production-ready Docker implementation
-- ✅ Working health and QR endpoints
-- ✅ Optimal performance metrics achieved
-- ✅ Security best practices implemented
-- ✅ CI/CD pipeline compatibility
-- ✅ Resource efficiency (14MB memory, 44MB image)
-````
-
-## File: .env.example
-````
-DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
-API_SECRET="your-super-secret-api-key"
-INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
-````
-
-## File: drizzle.config.ts
-````typescript
-import { defineConfig } from 'drizzle-kit';
-import 'dotenv/config';
-
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL environment variable is required');
-}
-
-export default defineConfig({
-  schema: './drizzle/schema.ts',
-  out: './drizzle/migrations',
-  dialect: 'postgresql',
-  dbCredentials: {
-    url: process.env.DATABASE_URL,
-  },
-  verbose: true,
-  strict: true,
-});
-````
-
-## File: package.json
-````json
-{
-  "name": "whatsapp-gateway-saas",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "gateway"
-  ],
-  "scripts": {
-    "dev": "bun --cwd gateway run dev",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
-  },
-  "devDependencies": {
-    "drizzle-kit": "latest",
-    "dotenv": "latest"
-  }
-}
 ````
 
 ## File: providers/whatsmeow/docker-compose.yml
@@ -915,6 +951,14 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/16
+````
+
+## File: .env.example
+````
+DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
+API_SECRET="your-super-secret-api-key"
+INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+GATEWAY_URL="http://host.docker.internal:3000" # URL for provider containers to reach the gateway
 ````
 
 ## File: README.md
@@ -1185,6 +1229,97 @@ require (
 )
 ````
 
+## File: providers/whatsmeow/Dockerfile
+````
+# Multi-stage build for optimal image size and security
+# Build stage - compiles the Go binary
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies for CGO (required for SQLite3)
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+
+# Set working directory
+WORKDIR /src
+
+# Copy go mod file first for better layer caching
+COPY go.mod ./
+
+# Download dependencies - this layer only rebuilds when go.mod changes
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Generate go.sum and tidy dependencies
+RUN go mod tidy
+
+# Build arguments for versioning and optimization
+ARG VERSION=dev
+ARG BUILD_TIME
+
+# Build the application with optimizations
+# - CGO_ENABLED=1 required for SQLite3 support
+# - -ldflags strips debug symbols and sets build info
+# - -trimpath removes file system paths from binary
+RUN CGO_ENABLED=1 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    go build \
+    -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+    -o /bin/whatsapp-gateway \
+    .
+
+# Final runtime stage - minimal secure image
+FROM alpine:3.20
+
+# Install runtime dependencies
+RUN apk --no-cache add \
+    ca-certificates \
+    tzdata \
+    wget \
+    sqlite \
+    && rm -rf /var/cache/apk/*
+
+# Create non-root user and group for security
+RUN addgroup -S -g 1001 appgroup && \
+    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G appgroup appuser
+
+# Create directories with proper permissions
+RUN mkdir -p /app/session /app/logs && \
+    chown -R appuser:appgroup /app && \
+    chmod 755 /app/session
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /bin/whatsapp-gateway /usr/local/bin/whatsapp-gateway
+
+# Ensure binary is executable
+RUN chmod +x /usr/local/bin/whatsapp-gateway
+
+# Switch to non-root user
+USER appuser
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Expose application port
+EXPOSE 8080
+
+# Define persistent volumes
+VOLUME ["/app/session"]
+
+# Set environment variables
+ENV PORT=8080
+ENV GOMAXPROCS=1
+
+# Container entrypoint
+ENTRYPOINT ["whatsapp-gateway"]
+````
+
 ## File: providers/whatsmeow/main.go
 ````go
 package main
@@ -1194,6 +1329,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -1219,6 +1355,102 @@ var waLogger waLog.Logger
 var qrCodeStr string
 var qrCodeMutex sync.RWMutex
 var startTime = time.Now()
+
+// --- State Snapshotting ---
+var (
+	gatewayURL      = os.Getenv("GATEWAY_URL")
+	instanceID      = os.Getenv("INSTANCE_ID")
+	internalAPISecret = os.Getenv("INTERNAL_API_SECRET")
+	dbPath          = "/app/session/whatsmeow.db"
+)
+
+func fetchStateSnapshot() error {
+	if gatewayURL == "" || instanceID == "" || internalAPISecret == "" {
+		waLogger.Warnf("State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET")
+		return nil
+	}
+	url := fmt.Sprintf("%s/internal/state/%s/snapshot", gatewayURL, instanceID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot fetch request: %w", err)
+	}
+	req.Header.Set("X-Internal-Secret", internalAPISecret)
+
+	waLogger.Infof("Fetching state snapshot from %s", url)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute snapshot fetch request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		waLogger.Infof("No existing state snapshot found. Starting fresh.")
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch snapshot, status: %s", resp.Status)
+	}
+
+	// Ensure session directory exists
+	if err := os.MkdirAll("/app/session", 0755); err != nil {
+		return fmt.Errorf("failed to create session directory: %w", err)
+	}
+
+	file, err := os.Create(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to create database file: %w", err)
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write snapshot to file: %w", err)
+	}
+	waLogger.Infof("Successfully restored state snapshot.")
+	return nil
+}
+
+func uploadStateSnapshot() {
+	if gatewayURL == "" || instanceID == "" || internalAPISecret == "" {
+		waLogger.Warnf("State snapshotting disabled: missing GATEWAY_URL, INSTANCE_ID, or INTERNAL_API_SECRET")
+		return
+	}
+
+	fileData, err := os.ReadFile(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			waLogger.Warnf("Database file not found at %s, nothing to snapshot.", dbPath)
+			return
+		}
+		waLogger.Errorf("Failed to read database file for snapshotting: %v", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/internal/state/%s/snapshot", gatewayURL, instanceID)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(fileData))
+	if err != nil {
+		waLogger.Errorf("Failed to create snapshot upload request: %v", err)
+		return
+	}
+	req.Header.Set("X-Internal-Secret", internalAPISecret)
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	waLogger.Infof("Uploading state snapshot to %s", url)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		waLogger.Errorf("Failed to execute snapshot upload request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		waLogger.Errorf("Failed to upload snapshot, status: %s", resp.Status)
+	} else {
+		waLogger.Infof("Successfully uploaded state snapshot.")
+	}
+}
+
+// --- End State Snapshotting ---
 
 type webhookPayload struct {
 	Event string      `json:"event"`
@@ -1387,8 +1619,15 @@ func main() {
 	waLogger = waLog.Stdout("main", "INFO", true)
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
+	// Fetch state from gateway before initializing DB connection
+	if err := fetchStateSnapshot(); err != nil {
+		// We panic here because a failed restore could lead to data loss
+		// or an inconsistent state. It's safer to fail hard.
+		panic(fmt.Errorf("critical error during state restoration: %w", err))
+	}
+
 	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite3", "file:/app/session/whatsmeow.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", dbPath), dbLog)
 	if err != nil {
 		panic(err)
 	}
@@ -1436,99 +1675,11 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
+	waLogger.Infof("Received shutdown signal. Uploading state snapshot...")
+	uploadStateSnapshot()
 	client.Disconnect()
+	waLogger.Infof("Disconnected. Goodbye.")
 }
-````
-
-## File: providers/whatsmeow/Dockerfile
-````
-# Multi-stage build for optimal image size and security
-# Build stage - compiles the Go binary
-FROM golang:1.24-alpine AS builder
-
-# Install build dependencies for CGO (required for SQLite3)
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
-
-# Set working directory
-WORKDIR /src
-
-# Copy go mod file first for better layer caching
-COPY go.mod ./
-
-# Download dependencies - this layer only rebuilds when go.mod changes
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Generate go.sum and tidy dependencies
-RUN go mod tidy
-
-# Build arguments for versioning and optimization
-ARG VERSION=dev
-ARG BUILD_TIME
-
-# Build the application with optimizations
-# - CGO_ENABLED=1 required for SQLite3 support
-# - -ldflags strips debug symbols and sets build info
-# - -trimpath removes file system paths from binary
-RUN CGO_ENABLED=1 \
-    GOOS=linux \
-    GOARCH=amd64 \
-    go build \
-    -trimpath \
-    -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
-    -o /bin/whatsapp-gateway \
-    .
-
-# Final runtime stage - minimal secure image
-FROM alpine:3.20
-
-# Install runtime dependencies
-RUN apk --no-cache add \
-    ca-certificates \
-    tzdata \
-    wget \
-    sqlite \
-    && rm -rf /var/cache/apk/*
-
-# Create non-root user and group for security
-RUN addgroup -S -g 1001 appgroup && \
-    adduser -S -D -H -u 1001 -h /app -s /sbin/nologin -G appgroup appuser
-
-# Create directories with proper permissions
-RUN mkdir -p /app/session /app/logs && \
-    chown -R appuser:appgroup /app && \
-    chmod 755 /app/session
-
-# Set working directory
-WORKDIR /app
-
-# Copy binary from builder stage
-COPY --from=builder /bin/whatsapp-gateway /usr/local/bin/whatsapp-gateway
-
-# Ensure binary is executable
-RUN chmod +x /usr/local/bin/whatsapp-gateway
-
-# Switch to non-root user
-USER appuser
-
-# Health check endpoint
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
-
-# Expose application port
-EXPOSE 8080
-
-# Define persistent volumes
-VOLUME ["/app/session"]
-
-# Set environment variables
-ENV PORT=8080
-ENV GOMAXPROCS=1
-
-# Container entrypoint
-ENTRYPOINT ["whatsapp-gateway"]
 ````
 
 ## File: user.prompt.md

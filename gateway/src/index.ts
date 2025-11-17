@@ -91,7 +91,12 @@ const app = new Elysia()
     }, {
         body: t.Object({
             phone: t.String(),
-            provider: t.Enum(schema.providerEnum),
+            provider: t.Union([
+                t.Literal('whatsmeow'),
+                t.Literal('baileys'),
+                t.Literal('wawebjs'),
+                t.Literal('waba')
+            ]),
             webhook: t.Optional(t.String()),
             resources: t.Optional(t.Object({
                 cpu: t.String(),
@@ -294,9 +299,18 @@ const app = new Elysia()
     })
     .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
         const instanceId = parseInt(params.instanceId, 10);
-        
+
         // The body is raw bytes, we need to base64 encode it for storing in text field
-        const bodyBuffer = await Bun.readableStreamToBuffer(body as ReadableStream);
+        let bodyBuffer: Buffer;
+        if (body instanceof ReadableStream) {
+            bodyBuffer = await new Response(body).arrayBuffer().then(buf => Buffer.from(buf));
+        } else if (Buffer.isBuffer(body)) {
+            bodyBuffer = body;
+        } else if (typeof body === 'string') {
+            bodyBuffer = Buffer.from(body, 'utf-8');
+        } else {
+            bodyBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
+        }
         const value = bodyBuffer.toString('base64');
 
         await db.insert(schema.instanceState)
@@ -305,7 +319,7 @@ const app = new Elysia()
                 target: [schema.instanceState.instanceId, schema.instanceState.key],
                 set: { value: value }
             });
-        
+
         set.status = 204;
     }, {
         // Allow any content type as we are reading the raw body
