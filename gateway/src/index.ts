@@ -25,7 +25,7 @@ async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
 }
 
 
-const app = new Elysia()
+export const app = new Elysia()
   .get('/', () => ({ status: 'ok' }))
   .group('/api', (app) => app
     // Resolve user from API Key

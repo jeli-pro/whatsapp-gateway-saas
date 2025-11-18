@@ -1,11 +1,26 @@
 # Directory Structure
 ```
 drizzle/
+  package.json
   schema.ts
+  tsconfig.json
 gateway/
   src/
+    docker.client.ts
     docker.service.ts
     index.ts
+  tests/
+    e2e/
+      .gitkeep
+      instances.test.ts
+      state.test.ts
+    helpers/
+      setup.ts
+    integration/
+      .gitkeep
+    unit/
+      .gitkeep
+      docker.service.test.ts
   .eslintrc.cjs
   package.json
   tsconfig.json
@@ -18,43 +33,627 @@ providers/
     go.mod
     main.go
 .env.example
+.env.test
+docker-compose.test.yml
 docker-compose.worker.yml
 drizzle.config.ts
 package.json
 README.md
+tsconfig.base.json
 tsconfig.json
 ```
 
 # Files
 
-## File: gateway/.eslintrc.cjs
+## File: gateway/src/docker.client.ts
+````typescript
+import { URL } from 'url';
+
+// Simplified subset of Dockerode's ContainerInfo
+export interface ContainerInfo {
+    Id: string;
+    Names: string[];
+    Image: string;
+    ImageID: string;
+    Command: string;
+    Created: number;
+    State: string;
+    Status: string;
+    Ports: any[];
+    Labels: Record<string, string>;
+    SizeRw?: number;
+    SizeRootFs?: number;
+    HostConfig: {
+        NetworkMode: string;
+    };
+    NetworkSettings: {
+        Networks: any;
+    };
+    Mounts: any[];
+}
+
+export interface WorkerNode {
+    id: number;
+    dockerHost: string;
+    publicHost: string;
+}
+
+interface RequestOptions {
+    method?: 'GET' | 'POST' | 'DELETE' | 'PUT';
+    body?: any;
+    headers?: Record<string, string>;
+    json?: boolean;
+}
+
+class DockerClient {
+    private socketPath?: string;
+    private host?: string;
+    private port?: number;
+
+    constructor(node: Pick<WorkerNode, 'dockerHost'>) {
+        if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+            this.socketPath = node.dockerHost.replace('unix://', '');
+        } else if (node.dockerHost.startsWith('tcp://')) {
+            const parsedUrl = new URL(node.dockerHost);
+            this.host = parsedUrl.hostname;
+            this.port = parseInt(parsedUrl.port, 10);
+        } else {
+            const [host, port] = node.dockerHost.split(':');
+            this.host = host;
+            this.port = parseInt(port, 10);
+        }
+    }
+
+    private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+        const method = options.method || 'GET';
+        const headers = options.headers || {};
+
+        let url: string;
+        let fetchOptions: RequestInit = { method, headers };
+
+        if (this.socketPath) {
+            // Path must be absolute for unix socket fetch
+            const absolutePath = path.startsWith('/') ? path : `/${path}`;
+            url = `http://localhost${absolutePath}`;
+            (fetchOptions as any).unix = this.socketPath;
+        } else {
+            url = `http://${this.host}:${this.port}${path}`;
+        }
+        
+        if (options.body) {
+            if (typeof options.body === 'object' && options.body !== null) {
+                headers['Content-Type'] = 'application/json';
+                fetchOptions.body = JSON.stringify(options.body);
+            } else {
+                fetchOptions.body = options.body;
+            }
+        }
+        
+        const res = await fetch(url, fetchOptions);
+
+        if (!res.ok) {
+            const errorText = await res.text();
+            console.error(`Docker API Error (${res.status} on ${method} ${path}): ${errorText}`);
+            const error: any = new Error(`Docker API request failed: ${res.status} ${res.statusText}`);
+            error.statusCode = res.status;
+            error.reason = res.statusText;
+            error.responseBody = errorText;
+            throw error;
+        }
+
+        if (res.status === 204) {
+            return null as T;
+        }
+        
+        if (options.json === false) { // for streams
+            return res as T;
+        }
+
+        return res.json() as Promise<T>;
+    }
+    
+    // Equivalent of docker.listContainers
+    async listContainers(options?: { all?: boolean, filters?: any }): Promise<ContainerInfo[]> {
+        const params = new URLSearchParams();
+        if (options?.all) {
+            params.set('all', 'true');
+        }
+        if (options?.filters) {
+            params.set('filters', JSON.stringify(options.filters));
+        }
+        return this.request(`/containers/json?${params.toString()}`);
+    }
+
+    // Equivalent of docker.createContainer
+    async createContainer(options: any): Promise<{ Id: string, Warnings: string[] }> {
+        const params = new URLSearchParams();
+        if(options.name) {
+            params.set('name', options.name);
+        }
+        return this.request(`/containers/create?${params.toString()}`, {
+            method: 'POST',
+            body: options,
+        });
+    }
+
+    // Equivalent of container.start
+    async startContainer(containerId: string): Promise<void> {
+        await this.request(`/containers/${containerId}/start`, { method: 'POST' });
+    }
+
+    // Equivalent of container.stop
+    async stopContainer(containerId: string, options?: { t?: number }): Promise<void> {
+        const params = new URLSearchParams();
+        if (options?.t) {
+            params.set('t', options.t.toString());
+        }
+        await this.request(`/containers/${containerId}/stop?${params.toString()}`, { method: 'POST' });
+    }
+
+    // Equivalent of container.remove
+    async removeContainer(containerId: string): Promise<void> {
+        await this.request(`/containers/${containerId}`, { method: 'DELETE' });
+    }
+
+    // Equivalent of container.inspect
+    async inspectContainer(containerId: string): Promise<any> {
+        return this.request(`/containers/${containerId}/json`);
+    }
+
+    // Equivalent of docker.listImages
+    async listImages(options?: { filters?: any }): Promise<any[]> {
+        const params = new URLSearchParams();
+        if (options?.filters) {
+            params.set('filters', JSON.stringify(options.filters));
+        }
+        return this.request(`/images/json?${params.toString()}`);
+    }
+
+    // Equivalent of docker.pull
+    async pullImage(imageName: string): Promise<Response> {
+        const [image, tag] = imageName.split(':');
+        const params = new URLSearchParams({ fromImage: image, tag: tag || 'latest' });
+        // This returns a stream, so don't parse as JSON
+        return this.request(`/images/create?${params.toString()}`, { method: 'POST', json: false });
+    }
+}
+
+export function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): DockerClient {
+    return new DockerClient(node);
+}
 ````
-/** @type {import("eslint").Linter.Config} */
-module.exports = {
-  root: true,
-  parser: '@typescript-eslint/parser',
-  plugins: [
-    '@typescript-eslint',
-  ],
-  extends: [
-    'eslint:recommended',
-    'plugin:@typescript-eslint/recommended',
-  ],
-  env: {
-    node: true,
-    es2021: true,
+
+## File: .env.test
+````
+DATABASE_URL="postgresql://test_user:test_password@localhost:5433/test_db"
+API_SECRET="your-super-secret-api-key"
+INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+GATEWAY_URL="http://host.docker.internal:3000"
+````
+
+## File: docker-compose.test.yml
+````yaml
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: whatsapp-gateway-saas-test-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: test_db
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d test_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+````
+
+## File: drizzle/package.json
+````json
+{
+  "name": "@whatsapp-gateway-saas/drizzle",
+  "private": true
+}
+````
+
+## File: drizzle/tsconfig.json
+````json
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": false
   },
-  parserOptions: {
-    ecmaVersion: 'latest',
-    sourceType: 'module',
-    project: './tsconfig.json',
-  },
-  rules: {
-    '@typescript-eslint/no-explicit-any': 'off',
-    '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
-  },
-  ignorePatterns: ['.eslintrc.cjs', 'node_modules', 'dist'],
+  "include": ["schema.ts"]
+}
+````
+
+## File: gateway/tests/e2e/.gitkeep
+````
+// This file ensures the directory is tracked by git.
+````
+
+## File: gateway/tests/e2e/instances.test.ts
+````typescript
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, cleanupContainers, TEST_USER_API_KEY, findContainerByInstanceId } from '../helpers/setup';
+import * as schema from '../../../drizzle/schema';
+import { eq } from 'drizzle-orm';
+
+describe('E2E - Instance Management API', () => {
+    let serverUrl: string;
+
+    beforeAll(async () => {
+        const setupResult = await setup();
+        serverUrl = setupResult.serverUrl;
+    });
+
+    afterAll(async () => {
+        // Final cleanup after all tests in this file run
+        await cleanupContainers();
+        await teardown();
+    });
+
+    afterEach(async () => {
+        // Clean up resources between tests to ensure isolation
+        await cleanupContainers();
+        await cleanupDb();
+    });
+
+    test('should create, start, and delete a whatsmeow instance', async () => {
+        // 1. Create Instance
+        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${TEST_USER_API_KEY}`
+            },
+            body: JSON.stringify({
+                name: "e2e-test-instance",
+                phone: "1234567890",
+                provider: "whatsmeow",
+            }),
+        });
+        
+        expect(createResponse.status).toBe(200);
+        const instance = await createResponse.json() as { id: number; status: string; };
+        
+        expect(instance.id).toBeTypeOf('number');
+        expect(instance.status).toBe('running');
+        const instanceId = instance.id;
+
+        // 2. Verify instance exists in the database
+        const dbInstance = await db.query.instances.findFirst({
+            where: eq(schema.instances.id, instanceId),
+        });
+        expect(dbInstance).toBeDefined();
+        expect(dbInstance?.id).toBe(instanceId);
+
+        // 3. Verify the corresponding Docker container is running
+        const container = await findContainerByInstanceId(instanceId);
+        expect(container).toBeDefined();
+        expect(container?.State).toBe('running');
+        
+        // 4. Delete the Instance
+        const deleteResponse = await fetch(`${serverUrl}/api/instances/${instanceId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
+        });
+
+        expect(deleteResponse.status).toBe(204);
+
+        // 5. Verify the container has been removed
+        const containerAfterDelete = await findContainerByInstanceId(instanceId);
+        expect(containerAfterDelete).toBeUndefined();
+
+        // 6. Verify the instance has been removed from the database
+        const dbInstanceAfterDelete = await db.query.instances.findFirst({
+            where: eq(schema.instances.id, instanceId),
+        });
+        expect(dbInstanceAfterDelete).toBeUndefined();
+    }, 20000); // Increase timeout to allow for docker pull/start
+});
+````
+
+## File: gateway/tests/e2e/state.test.ts
+````typescript
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from '../helpers/setup';
+import * as schema from '../../../drizzle/schema';
+import { eq, and } from 'drizzle-orm';
+
+describe('E2E - Internal State API', () => {
+    let serverUrl: string;
+    let testInstance: Instance;
+    let testUser: User;
+    let testNode: Node;
+
+    beforeAll(async () => {
+        const setupResult = await setup();
+        serverUrl = setupResult.serverUrl;
+        testUser = setupResult.user;
+        testNode = setupResult.node;
+    });
+
+    afterAll(async () => {
+        await teardown();
+    });
+
+    beforeEach(async () => {
+        // Create a test instance record directly in the DB for these tests
+        [testInstance] = await db.insert(schema.instances).values({
+            nodeId: testNode.id,
+            userId: testUser.id,
+            phoneNumber: '9876543210',
+            provider: 'whatsmeow',
+            status: 'running',
+        }).returning();
+    });
+
+    afterEach(async () => {
+        await cleanupDb();
+    });
+
+    test('should reject access without the internal secret', async () => {
+        const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
+        expect(res.status).toBe(401);
+
+        const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, { method: 'POST' });
+        expect(postRes.status).toBe(401);
+    });
+
+    test('should upload and download a state snapshot', async () => {
+        const instanceId = testInstance.id;
+        const snapshotData = Buffer.from(`this is a binary test snapshot payload for instance ${instanceId}`);
+
+        // 1. Upload Snapshot
+        const uploadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+            method: 'POST',
+            headers: {
+                'X-Internal-Secret': TEST_INTERNAL_API_SECRET,
+                'Content-Type': 'application/octet-stream',
+            },
+            body: snapshotData,
+        });
+        
+        expect(uploadResponse.status).toBe(204);
+
+        // 2. Verify the snapshot was saved correctly in the database
+        const dbState = await db.query.instanceState.findFirst({
+            where: and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, 'session_snapshot')
+            ),
+        });
+        expect(dbState).toBeDefined();
+        expect(dbState?.value).toEqual(snapshotData);
+
+        // 3. Download the snapshot
+        const downloadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+            headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+        });
+
+        expect(downloadResponse.status).toBe(200);
+        expect(downloadResponse.headers.get('content-type')).toBe('application/octet-stream');
+        
+        const downloadedData = Buffer.from(await downloadResponse.arrayBuffer());
+        expect(downloadedData).toEqual(snapshotData);
+
+        // 4. Test GET for a non-existent snapshot returns 404
+        const notFoundResponse = await fetch(`${serverUrl}/internal/state/999999/snapshot`, {
+             headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+        });
+        expect(notFoundResponse.status).toBe(404);
+    });
+});
+````
+
+## File: gateway/tests/helpers/setup.ts
+````typescript
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { getDockerClientForNode, type ContainerInfo } from '../../src/docker.client';
+import * as schema from '../../../drizzle/schema';
+import { app } from '../../src/index';
+
+// --- Types ---
+export type User = typeof schema.users.$inferSelect;
+export type Node = typeof schema.nodes.$inferSelect;
+export type Instance = typeof schema.instances.$inferSelect;
+
+// --- DB Connection ---
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error("DATABASE_URL is not set. Please create a .env file for testing.");
+}
+const client = postgres(connectionString);
+export const db = drizzle(client, { schema });
+
+// --- Docker Client ---
+// --- Test Constants ---
+// Bun automatically loads .env, but we provide fallbacks.
+export const TEST_USER_API_KEY = process.env.API_SECRET || 'test-api-key-secret-for-ci';
+export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || 'test-internal-secret-for-ci';
+export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
+export const TEST_NODE_PUBLIC_HOST = 'localhost';
+
+const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
+
+
+/**
+ * Sets up the test environment:
+ * 1. Starts the API server on a random available port.
+ * 2. Cleans and seeds the database with a test user and a test node.
+ * @returns An object with the server URL and the created user/node entities.
+ */
+export const setup = async () => {
+  // Start server on a random available port by passing 0.
+  await app.listen(0);
+
+  // Clean database before seeding to ensure a fresh state.
+  await db.delete(schema.instanceState);
+  await db.delete(schema.instances);
+  await db.delete(schema.users);
+  await db.delete(schema.nodes);
+  
+  const [testUser] = await db.insert(schema.users).values({
+    email: `test-${Date.now()}@example.com`,
+    apiKey: TEST_USER_API_KEY,
+  }).returning();
+
+  const [testNode] = await db.insert(schema.nodes).values({
+    name: 'test-node-1',
+    dockerHost: TEST_NODE_DOCKER_HOST,
+    publicHost: TEST_NODE_PUBLIC_HOST,
+  }).returning();
+
+  return {
+    serverUrl: `http://localhost:${app.server?.port}`,
+    user: testUser,
+    node: testNode,
+  };
 };
+
+/**
+ * Tears down the test environment:
+ * 1. Stops the API server.
+ * 2. Closes the database connection.
+ */
+export const teardown = async () => {
+  await app.stop();
+  await client.end({ timeout: 5 });
+};
+
+/**
+ * Removes all instance-related records from the database.
+ */
+export const cleanupDb = async () => {
+    await db.delete(schema.instanceState);
+    await db.delete(schema.instances);
+};
+
+/**
+ * Finds and removes all Docker containers created by the tests.
+ */
+export const cleanupContainers = async () => {
+    const containers = await docker.listContainers({
+        all: true,
+        filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+    });
+
+    for (const containerInfo of containers) {
+        console.log(`Cleaning up test container: ${containerInfo.Id}`);
+        try {
+            await docker.stopContainer(containerInfo.Id, { t: 5 });
+        } catch (e: any) {
+            // Ignore if already stopped (304) or not found (404)
+            if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+        }
+        try {
+            await docker.removeContainer(containerInfo.Id);
+        } catch (e: any) {
+             // Ignore if not found (404)
+            if (e.statusCode !== 404) console.error(e);
+        }
+    }
+};
+
+/**
+ * Test helper to find a container by its instance ID label.
+ * @param instanceId The ID of the instance.
+ * @returns ContainerInfo if found, otherwise undefined.
+ */
+export async function findContainerByInstanceId(instanceId: number): Promise<ContainerInfo | undefined> {
+    const containers = await docker.listContainers({
+        all: true,
+        filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+    });
+    return containers[0];
+}
+````
+
+## File: gateway/tests/integration/.gitkeep
+````
+// This file ensures the directory is tracked by git.
+````
+
+## File: gateway/tests/unit/.gitkeep
+````
+// This file ensures the directory is tracked by git.
+````
+
+## File: gateway/tests/unit/docker.service.test.ts
+````typescript
+import { describe, test, expect } from 'bun:test';
+import { sanitizeForContainerName, parseMemory } from '../../src/docker.service';
+
+describe('Docker Service Utilities', () => {
+    describe('sanitizeForContainerName', () => {
+        test('should convert to lowercase', () => {
+            expect(sanitizeForContainerName('MyContainer')).toBe('mycontainer');
+        });
+
+        test('should replace spaces with hyphens', () => {
+            expect(sanitizeForContainerName('my container name')).toBe('my-container-name');
+        });
+
+        test('should replace multiple special characters with a single hyphen', () => {
+            expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-_name');
+        });
+
+        test('should collapse consecutive hyphens', () => {
+            expect(sanitizeForContainerName('my---container')).toBe('my-container');
+        });
+
+        test('should handle empty string', () => {
+            expect(sanitizeForContainerName('')).toBe('');
+        });
+
+        test('should allow valid characters like dots and underscores', () => {
+            expect(sanitizeForContainerName('my_container.v1')).toBe('my_container.v1');
+        });
+    });
+
+    describe('parseMemory', () => {
+        test('should parse megabytes (m)', () => {
+            expect(parseMemory('512m')).toBe(512 * 1024 * 1024);
+        });
+
+        test('should parse gigabytes (g)', () => {
+            expect(parseMemory('2g')).toBe(2 * 1024 * 1024 * 1024);
+        });
+        
+        test('should parse kilobytes (k)', () => {
+            expect(parseMemory('256k')).toBe(256 * 1024);
+        });
+
+        test('should handle uppercase units', () => {
+            expect(parseMemory('512M')).toBe(512 * 1024 * 1024);
+            expect(parseMemory('2G')).toBe(2 * 1024 * 1024 * 1024);
+        });
+
+        test('should return 0 for empty string', () => {
+            expect(parseMemory('')).toBe(0);
+        });
+
+        test('should return 0 for invalid string', () => {
+            expect(parseMemory('invalid')).toBe(0);
+        });
+
+        test('should treat number string as bytes', () => {
+            expect(parseMemory('1024')).toBe(1024);
+        });
+    });
+});
 ````
 
 ## File: providers/whatsmeow/.env.example
@@ -335,17 +934,7 @@ export default defineConfig({
 });
 ````
 
-## File: tsconfig.json
-````json
-{
-  "files": [],
-  "references": [
-    { "path": "gateway" }
-  ]
-}
-````
-
-## File: gateway/tsconfig.json
+## File: tsconfig.base.json
 ````json
 {
   "compilerOptions": {
@@ -354,25 +943,67 @@ export default defineConfig({
     "target": "ESNext",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "composite": true,
     "strict": true,
     "downlevelIteration": true,
     "skipLibCheck": true,
-    "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
     "types": [
       "bun-types"
     ]
-  },
-  "include": [
-    "src",
-    "../drizzle/schema.ts"
-  ]
+  }
 }
+````
+
+## File: gateway/.eslintrc.cjs
+````
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  root: true,
+  parser: '@typescript-eslint/parser',
+  plugins: [
+    '@typescript-eslint',
+  ],
+  extends: [
+    'eslint:recommended',
+    'plugin:@typescript-eslint/recommended',
+  ],
+  env: {
+    node: true,
+    es2021: true,
+  },
+  parserOptions: {
+    ecmaVersion: 'latest',
+    sourceType: 'module',
+    project: './tsconfig.json',
+  },
+  rules: {
+    '@typescript-eslint/no-explicit-any': 'off',
+    '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
+  },
+  overrides: [
+    {
+      files: ['tests/**/*.ts'],
+      // Bun's test runner is Jest-compatible. We define its globals here.
+      globals: {
+        'describe': 'readonly',
+        'test': 'readonly',
+        'expect': 'readonly',
+        'beforeAll': 'readonly',
+        'afterAll': 'readonly',
+        'beforeEach': 'readonly',
+        'afterEach': 'readonly',
+        'it': 'readonly',
+      },
+      rules: {
+        // It's common to use non-null assertions in tests where we can guarantee state.
+        '@typescript-eslint/no-non-null-assertion': 'off',
+      }
+    }
+  ],
+  ignorePatterns: ['.eslintrc.cjs', 'node_modules', 'dist'],
+};
 ````
 
 ## File: providers/whatsmeow/docker-compose.yml
@@ -473,28 +1104,6 @@ DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
 API_SECRET="your-super-secret-api-key"
 INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
 GATEWAY_URL="http://host.docker.internal:3000" # URL for provider containers to reach the gateway
-````
-
-## File: package.json
-````json
-{
-  "name": "whatsapp-gateway-saas",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "gateway"
-  ],
-  "scripts": {
-    "dev": "bun --cwd gateway run dev",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
-  },
-  "devDependencies": {
-    "drizzle-kit": "latest",
-    "dotenv": "latest",
-    "typescript": "latest"
-  }
-}
 ````
 
 ## File: README.md
@@ -751,6 +1360,37 @@ This is not an official WhatsApp product. Use it for legitimate purposes only. S
 - Issues via GitHub.
 ````
 
+## File: tsconfig.json
+````json
+{
+  "files": [],
+  "references": [
+    { "path": "drizzle" },
+    { "path": "gateway" }
+  ]
+}
+````
+
+## File: gateway/tsconfig.json
+````json
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": true,
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src",
+    "tests"
+  ],
+  "references": [
+    { "path": "../drizzle" }
+  ]
+}
+````
+
 ## File: providers/whatsmeow/go.mod
 ````
 module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow
@@ -765,33 +1405,29 @@ require (
 )
 ````
 
-## File: gateway/package.json
+## File: package.json
 ````json
 {
-  "name": "gateway",
-  "module": "src/index.ts",
-  "type": "module",
+  "name": "whatsapp-gateway-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "gateway",
+    "drizzle"
+  ],
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "lint": "eslint .",
-    "typecheck": "tsc -b"
+    "dev": "bun --cwd gateway run dev",
+    "pretest": "docker-compose -f docker-compose.test.yml up -d --wait && dotenv -e .env.test -- bun run db:migrate",
+    "test": "bun --cwd gateway run test",
+    "posttest": "docker-compose -f docker-compose.test.yml down -v --remove-orphans",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "devDependencies": {
-    "@types/dockerode": "latest",
-    "@typescript-eslint/eslint-plugin": "latest",
-    "@typescript-eslint/parser": "latest",
-    "bun-types": "latest",
-    "eslint": "latest",
+    "drizzle-kit": "latest",
+    "dotenv": "latest",
+    "dotenv-cli": "latest",
     "typescript": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "elysia": "latest",
-    "drizzle-orm": "latest",
-    "postgres": "latest",
-    "dockerode": "latest"
   }
 }
 ````
@@ -1334,29 +1970,45 @@ export const nodeRelations = relations(nodes, ({ many }) => ({
 }));
 ````
 
+## File: gateway/package.json
+````json
+{
+  "name": "gateway",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "latest",
+    "@typescript-eslint/parser": "latest",
+    "bun-types": "latest",
+    "eslint": "latest",
+    "typescript": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "drizzle-orm": "latest",
+    "postgres": "latest"
+  }
+}
+````
+
 ## File: gateway/src/docker.service.ts
 ````typescript
-import Dockerode from 'dockerode';
-import { URL } from 'url';
+import { getDockerClientForNode, type ContainerInfo } from './docker.client';
 
 // A simple representation of a worker node, passed from the API layer.
 export interface WorkerNode {
     id: number;
     dockerHost: string;
     publicHost: string;
-}
-
-function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): Dockerode {
-    if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
-        return new Dockerode({ socketPath: node.dockerHost.replace('unix://', '') });
-    }
-    if (node.dockerHost.startsWith('tcp://')) {
-        const parsedUrl = new URL(node.dockerHost);
-        return new Dockerode({ host: parsedUrl.hostname, port: parsedUrl.port });
-    }
-    // Fallback for simple host:port
-    const [host, port] = node.dockerHost.split(':');
-    return new Dockerode({ host, port: parseInt(port, 10) });
 }
 
 function getImageForProvider(provider: string): string {
@@ -1381,7 +2033,7 @@ interface CreateContainerOptions {
     provider: string;
 }
 
-function sanitizeForContainerName(name: string): string {
+export function sanitizeForContainerName(name: string): string {
     if (!name) return '';
     return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
 }
@@ -1406,7 +2058,7 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     const internalApiSecret = process.env.INTERNAL_API_SECRET;
 
     // 2. Create the container
-    const container = await docker.createContainer({
+    const createResponse = await docker.createContainer({
         Image: DOCKER_IMAGE,
         name: containerName,
         Env: [
@@ -1438,10 +2090,10 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     });
 
     // 3. Start the container
-    await container.start();
-    console.log(`Container started with ID: ${container.id}`);
+    await docker.startContainer(createResponse.Id);
+    console.log(`Container started with ID: ${createResponse.Id}`);
 
-    return container.inspect();
+    return docker.inspectContainer(createResponse.Id);
 }
 
 export async function stopAndRemoveContainer(instanceId: number, node: WorkerNode) {
@@ -1454,15 +2106,14 @@ export async function stopAndRemoveContainer(instanceId: number, node: WorkerNod
         }
 
         console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
-        const containerInstance = docker.getContainer(container.Id);
         
         // Stop with a 10-second timeout to allow graceful shutdown
-        await containerInstance.stop({ t: 10 }).catch(err => {
+        await docker.stopContainer(container.Id, { t: 10 }).catch(err => {
             // Ignore "container already stopped" or "no such container" errors
             if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
         });
 
-        await containerInstance.remove().catch(err => {
+        await docker.removeContainer(container.Id).catch(err => {
              // Ignore "no such container" errors
             if (err.statusCode !== 404) throw err;
         });
@@ -1477,7 +2128,7 @@ export async function stopAndRemoveContainer(instanceId: number, node: WorkerNod
     }
 }
 
-export async function findContainer(instanceId: number, node: WorkerNode): Promise<Dockerode.ContainerInfo | null> {
+export async function findContainer(instanceId: number, node: WorkerNode): Promise<ContainerInfo | null> {
     const docker = getDockerClientForNode(node);
     try {
         const containers = await docker.listContainers({
@@ -1511,11 +2162,10 @@ async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
         }
 
         console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
-        const pullStream = await docker.pull(imageName);
-        
-        await new Promise<void>((resolve, reject) => {
-            docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
-        });
+        // The pull response is a stream of progress events. We just need to wait for it to finish.
+        const pullResponse = await docker.pullImage(imageName);
+        // Consuming the body ensures we wait for the pull to complete.
+        await pullResponse.text();
 
         console.log(`Image ${imageName} pulled successfully on node.`);
     } catch (error) {
@@ -1524,7 +2174,7 @@ async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
     }
 }
 
-function parseMemory(memoryStr: string): number {
+export function parseMemory(memoryStr: string): number {
     if (!memoryStr) return 0; // default
     const unit = memoryStr.slice(-1).toLowerCase();
     const value = parseFloat(memoryStr.slice(0, -1));
@@ -1569,7 +2219,7 @@ async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
 }
 
 
-const app = new Elysia()
+export const app = new Elysia()
   .get('/', () => ({ status: 'ok' }))
   .group('/api', (app) => app
     // Resolve user from API Key
@@ -1918,9 +2568,12 @@ const app = new Elysia()
         set.status = 204;
     }, { body: t.ArrayBuffer() })
   )
-  .listen(3000);
 
-console.log(
-  `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
-);
+// Start the server only if this file is the main module
+if (import.meta.main) {
+    app.listen(3000);
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+}
 ````

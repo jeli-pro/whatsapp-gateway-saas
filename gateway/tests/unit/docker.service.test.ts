@@ -12,7 +12,7 @@ describe('Docker Service Utilities', () => {
         });
 
         test('should replace multiple special characters with a single hyphen', () => {
-            expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-.-name');
+            expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-_name');
         });
 
         test('should collapse consecutive hyphens', () => {

@@ -1,0 +1,136 @@
+uuid: 4f4f5d2b-bbd4-4a4b-9e4a-5797d39b4b0e
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T01:51:41.209Z'
+gitCommitMsg: >-
+  fix(tests): implement ephemeral database for E2E tests
+
+  Introduces a dedicated, ephemeral PostgreSQL database managed by Docker
+  Compose to resolve E2E test failures caused by `ECONNREFUSED` errors.
+
+  This change makes the test suite fully self-contained, idempotent, and
+  portable. The entire lifecycle (setup, migration, execution, teardown) is now
+  automated via npm scripts, enabling a reliable one-command `bun test`
+  experience for both local development and CI environments.
+promptSummary: >-
+  The user wants to fix the E2E tests which are failing due to database
+  connection errors.
+reasoning:
+  - >-
+    This is a critical fix. The E2E tests are failing because they can't connect
+    to a database. To ensure our test suite is reliable, idempotent, and
+    portable, I'm introducing an ephemeral PostgreSQL database managed via
+    Docker Compose, specifically for testing.
+  - >-
+    First, I'll define this test database service in a new
+    `docker-compose.test.yml` file. This keeps the test environment isolated
+    from development.
+  - >-
+    Next, I'll create a `.env.test` file. This provides the necessary
+    environment variables for the test runner and migration scripts to connect
+    to our new test database.
+  - >-
+    Finally, I'll orchestrate the entire test lifecycle within `package.json`.
+    I'll add `dotenv-cli` to load our test environment configuration and use
+    `pretest` and `posttest` scripts to automatically manage the database
+    container. This creates a seamless, one-command test experience (`bun test`)
+    that sets up, runs, and tears down the entire environment.
+  - >-
+    With these changes, the test suite becomes fully automated and reliable,
+    capable of running in any environment without manual setup.
+operations:
+  - type: write
+    path: docker-compose.test.yml
+    content: |-
+      version: "3.9"
+
+      services:
+        postgres:
+          image: postgres:16-alpine
+          container_name: whatsapp-gateway-saas-test-db
+          restart: unless-stopped
+          environment:
+            POSTGRES_USER: test_user
+            POSTGRES_PASSWORD: test_password
+            POSTGRES_DB: test_db
+          ports:
+            - "5433:5432"
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U test_user -d test_db"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
+    patchStrategy: replace
+  - type: write
+    path: .env.test
+    content: >-
+      DATABASE_URL="postgresql://test_user:test_password@localhost:5433/test_db"
+
+      API_SECRET="your-super-secret-api-key"
+
+      INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+
+      GATEWAY_URL="http://host.docker.internal:3000"
+    patchStrategy: replace
+  - type: write
+    path: package.json
+    content: |
+      <<<<<<< SEARCH
+        "scripts": {
+          "dev": "bun --cwd gateway run dev",
+          "test": "bun --cwd gateway run test",
+          "db:generate": "drizzle-kit generate",
+          "db:migrate": "drizzle-kit migrate"
+        },
+        "devDependencies": {
+          "drizzle-kit": "latest",
+          "dotenv": "latest",
+          "typescript": "latest"
+        }
+      =======
+        "scripts": {
+          "dev": "bun --cwd gateway run dev",
+          "pretest": "docker-compose -f docker-compose.test.yml up -d --wait && dotenv -e .env.test -- bun run db:migrate",
+          "test": "bun --cwd gateway run test",
+          "posttest": "docker-compose -f docker-compose.test.yml down -v --remove-orphans",
+          "db:generate": "drizzle-kit generate",
+          "db:migrate": "drizzle-kit migrate"
+        },
+        "devDependencies": {
+          "drizzle-kit": "latest",
+          "dotenv": "latest",
+          "dotenv-cli": "latest",
+          "typescript": "latest"
+        }
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+snapshot:
+  docker-compose.test.yml: null
+  .env.test: null
+  package.json: |-
+    {
+      "name": "whatsapp-gateway-saas",
+      "version": "0.1.0",
+      "private": true,
+      "workspaces": [
+        "gateway",
+        "drizzle"
+      ],
+      "scripts": {
+        "dev": "bun --cwd gateway run dev",
+        "test": "bun --cwd gateway run test",
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "drizzle-kit migrate"
+      },
+      "devDependencies": {
+        "drizzle-kit": "latest",
+        "dotenv": "latest",
+        "typescript": "latest"
+      }
+    }
+approved: true
+linesAdded: 25
+linesRemoved: 0
+linesDifference: 25
+gitCommittedAt: null
+status: committed
+id: 21

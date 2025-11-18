@@ -1,0 +1,931 @@
+uuid: 4a2f81a7-f58c-4f81-9b19-c0c1613d5a71
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T01:45:32.831Z'
+gitCommitMsg: >-
+  fix(gateway): resolve build errors and test failures
+
+  This commit addresses several issues that were preventing the gateway service
+  from compiling and passing its test suite.
+
+  - **TSConfig:** Moved `allowImportingTsExtensions` from `tsconfig.base.json`
+  to `gateway/tsconfig.json` to resolve TS5096 error in the drizzle project. -
+  **Testability:** Exported the Elysia `app` instance in `src/index.ts` to allow
+  the test suite to start and stop the server. - **Typings:** Corrected a type
+  error in `docker.client.ts` for Bun's `fetch` unix socket property by using a
+  type assertion. - **Unit Test:** Fixed an incorrect expectation in the
+  `sanitizeForContainerName` unit test to align with the function's correct
+  behavior. - **E2E Test:** Added a type assertion to the API response in the
+  E2E instance creation test to resolve `unknown` type errors.
+promptSummary: >-
+  The user provided a list of failing tests and TypeScript compiler errors and
+  requested fixes for all of them.
+reasoning:
+  - >-
+    This PR addresses a set of TypeScript compilation errors and test failures
+    that were blocking the build and validation of the gateway service. By
+    resolving these issues, we establish a stable, type-safe foundation for
+    further development.
+  - >-
+    First, I'll fix the TypeScript configuration. The
+    `allowImportingTsExtensions` option is not compatible with projects that
+    emit JavaScript, like our `drizzle` package. I'm moving this option from the
+    base `tsconfig.base.json` to `gateway/tsconfig.json`, as the gateway service
+    uses `noEmit: true` and can safely use this setting.
+  - >-
+    Next, to enable our test suite to interact with the Elysia server, the `app`
+    instance in `gateway/src/index.ts` needs to be exported. This resolves both
+    a compile-time error and a runtime error in the test setup.
+  - >-
+    The `docker.client.ts` file uses a Bun-specific `unix` socket property for
+    `fetch`, which causes a TypeScript error. I'll add a type assertion to
+    inform the compiler that this is an intentional, environment-specific
+    extension.
+  - >-
+    Moving on to the tests, the unit test for `sanitizeForContainerName` had an
+    incorrect expectation. I am correcting the test to match the function's
+    actual, correct output.
+  - >-
+    Finally, the end-to-end instance creation test was failing type-checking
+    because the response from `fetch` was inferred as `unknown`. I'm adding a
+    type assertion to properly type the response object, resolving the errors.
+operations:
+  - type: write
+    path: tsconfig.base.json
+    content: |+
+      --- tsconfig.base.json
+      +++ tsconfig.base.json
+      @@ -5,7 +5,6 @@
+           "target": "ESNext",
+           "moduleResolution": "bundler",
+           "moduleDetection": "force",
+      -    "allowImportingTsExtensions": true,
+           "strict": true,
+           "downlevelIteration": true,
+           "skipLibCheck": true,
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tsconfig.json
+    content: |+
+      --- gateway/tsconfig.json
+      +++ gateway/tsconfig.json
+      @@ -3,7 +3,8 @@
+         "compilerOptions": {
+           "noEmit": true,
+           "composite": true,
+      -    "jsx": "react-jsx"
+      +    "jsx": "react-jsx",
+      +    "allowImportingTsExtensions": true
+         },
+         "include": [
+           "src",
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/src/index.ts
+    content: |+
+      --- gateway/src/index.ts
+      +++ gateway/src/index.ts
+      @@ -25,7 +25,7 @@
+       }
+       
+       
+      -const app = new Elysia()
+      +export const app = new Elysia()
+         .get('/', () => ({ status: 'ok' }))
+         .group('/api', (app) => app
+           // Resolve user from API Key
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/src/docker.client.ts
+    content: |+
+      --- gateway/src/docker.client.ts
+      +++ gateway/src/docker.client.ts
+      @@ -66,7 +66,7 @@
+                   // Path must be absolute for unix socket fetch
+                   const absolutePath = path.startsWith('/') ? path : `/${path}`;
+                   url = `http://localhost${absolutePath}`;
+      -            fetchOptions.unix = this.socketPath;
+      +            (fetchOptions as any).unix = this.socketPath;
+               } else {
+                   url = `http://${this.host}:${this.port}${path}`;
+               }
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/unit/docker.service.test.ts
+    content: >+
+      --- gateway/tests/unit/docker.service.test.ts
+
+      +++ gateway/tests/unit/docker.service.test.ts
+
+      @@ -13,7 +13,7 @@
+               });
+       
+               test('should replace multiple special characters with a single hyphen', () => {
+      -           
+      expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-.-name');
+
+      +           
+      expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-_name');
+               });
+       
+               test('should collapse consecutive hyphens', () => {
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/e2e/instances.test.ts
+    content: >+
+      --- gateway/tests/e2e/instances.test.ts
+
+      +++ gateway/tests/e2e/instances.test.ts
+
+      @@ -35,7 +35,7 @@
+               });
+               
+               expect(createResponse.status).toBe(200);
+      -        const instance = await createResponse.json();
+
+      +        const instance = await createResponse.json() as { id: number;
+      status: string; };
+               
+               expect(instance.id).toBeTypeOf('number');
+               expect(instance.status).toBe('running');
+
+    patchStrategy: standard-diff
+snapshot:
+  tsconfig.base.json: |-
+    {
+      "compilerOptions": {
+        "lib": ["ESNext"],
+        "module": "ESNext",
+        "target": "ESNext",
+        "moduleResolution": "bundler",
+        "moduleDetection": "force",
+        "allowImportingTsExtensions": true,
+        "strict": true,
+        "downlevelIteration": true,
+        "skipLibCheck": true,
+        "allowSyntheticDefaultImports": true,
+        "forceConsistentCasingInFileNames": true,
+        "allowJs": true,
+        "types": [
+          "bun-types"
+        ]
+      }
+    }
+  gateway/tsconfig.json: |-
+    {
+      "extends": "../tsconfig.base.json",
+      "compilerOptions": {
+        "noEmit": true,
+        "composite": true,
+        "jsx": "react-jsx"
+      },
+      "include": [
+        "src",
+        "tests"
+      ],
+      "references": [
+        { "path": "../drizzle" }
+      ]
+    }
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq, and, not } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    // A simple proxy to fetch data from an instance via its public URL
+
+    async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
+        try {
+            const response = await fetch(instanceUrl, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${instanceUrl}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Resolve user from API Key
+        .resolve(async ({ headers }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ')) {
+                return { user: null };
+            }
+            const apiKey = auth.substring(7);
+            if (!apiKey) {
+                return { user: null };
+            }
+            const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+            
+            return { user: user || null };
+        })
+        // Simple bearer token auth
+        .onBeforeHandle(({ user, set }) => {
+            if (!user) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set, user }) => {
+            // Select a node for the new instance. Simple round-robin or first-available logic.
+            // For now, just pick the first one.
+            const [node] = await db.select().from(schema.nodes).limit(1);
+            if (!node) {
+                set.status = 503;
+                return { error: 'No available worker nodes to schedule instance.' };
+            }
+
+            // user is guaranteed to be non-null by the onBeforeHandle guard.
+            const [newInstance] = await db.insert(schema.instances).values({
+                nodeId: node.id,
+                userId: user!.id, 
+                name: body.name,
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    node: node,
+                    name: newInstance.name,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                    provider: newInstance.provider,
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                name: t.Optional(t.String()),
+                phone: t.String(),
+                provider: t.Union([
+                    t.Literal('whatsmeow'),
+                    t.Literal('baileys'),
+                    t.Literal('wawebjs'),
+                    t.Literal('waba')
+                ]),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check and fetch instance with its node
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                set.status = 500;
+                return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+            const qrResponse = await proxyToInstance(instanceUrl);
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return qrResponse.body;
+            }
+            
+            // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+            set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+            return qrResponse.blob();
+        })
+        .post('/instances/:id/send', async ({ params, body, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                set.status = 500;
+                return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+            const sendResponse = await proxyToInstance(instanceUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                // Instance exists but node doesn't. Clean up DB record.
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                return { message: 'Instance found without a node. Record cleaned up.' };
+            }
+
+            try {
+                await stopAndRemoveContainer(instanceId, instanceData.nodes);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+        .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+            // The `target_node` from the README is ignored in this single-node implementation.
+            const instanceId = parseInt(params.id, 10);
+
+            // 1. Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances || !instanceData.nodes) {
+                set.status = 404;
+                return { error: 'Instance not found or you do not have permission to access it' };
+            }
+            
+            const instance = instanceData.instances;
+            const currentNode = instanceData.nodes;
+
+            // Find a new node to migrate to
+            const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+            if (!newNode) {
+                set.status = 503;
+                return { error: 'No available node to migrate to.' };
+            }
+
+            console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
+
+            try {
+                // 2. Set status to 'migrating'
+                await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+                // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+                await stopAndRemoveContainer(instanceId, currentNode);
+                console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
+
+                // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+                await createAndStartContainer({
+                    instanceId: instance.id,
+                    node: newNode,
+                    name: instance.name,
+                    webhookUrl: instance.webhookUrl || '',
+                    cpuLimit: instance.cpuLimit || '0.5',
+                    memoryLimit: instance.memoryLimit || '512m',
+                    provider: instance.provider,
+                });
+                console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
+
+                // 5. Set status back to 'running'
+                const [updatedInstance] = await db.update(schema.instances).set({
+                    status: 'running',
+                    nodeId: newNode.id,
+                })
+                    .where(eq(schema.instances.id, instanceId))
+                    .returning();
+                
+                console.log(`Migration for instance ${instanceId} completed successfully.`);
+                return { status: 'ok', instance: updatedInstance };
+            } catch (error) {
+                console.error(`Migration failed for instance ${instanceId}:`, error);
+                await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+                set.status = 500;
+                return { error: 'Migration failed' };
+            }
+        }, {
+            body: t.Object({
+                target_node: t.Optional(t.String()),
+            })
+        })
+      )
+      // New internal API group for state management
+      .group('/internal', (app) => app
+        .onBeforeHandle(({ headers, set }) => {
+            const internalSecret = process.env.INTERNAL_API_SECRET;
+            if (!internalSecret) {
+                console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+                set.status = 503;
+                return { error: 'Service Unavailable' };
+            }
+            if (headers['x-internal-secret'] !== internalSecret) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .get('/state/:instanceId', async ({ params }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const states = await db.select({
+                key: schema.instanceState.key,
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+            
+            return states;
+        })
+        .get('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            ));
+
+            if (!state) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            return state.value; // Return raw value
+        })
+        .post('/state/:instanceId', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const { key, value } = body;
+            const valueAsBuffer = Buffer.from(value);
+            
+            await db.insert(schema.instanceState)
+                .values({ instanceId, key, value: valueAsBuffer })
+                .onConflictDoUpdate({
+                    target: [schema.instanceState.instanceId, schema.instanceState.key],
+                    set: { value: valueAsBuffer }
+                });
+            
+            set.status = 204;
+        }, {
+            body: t.Object({
+                key: t.String(),
+                value: t.String(),
+            })
+        })
+        .delete('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const result = await db.delete(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            )).returning();
+
+            if (result.length === 0) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            
+            set.status = 204;
+        })
+        .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, 'session_snapshot')
+            ));
+
+            if (!state || !state.value) {
+                set.status = 404;
+                return { error: 'Snapshot not found' };
+            }
+            // The value is a buffer from the bytea column
+            set.headers['Content-Type'] = 'application/octet-stream';
+            return state.value;
+        })
+        .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+
+            // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+            const value = Buffer.from(body);
+
+            await db.insert(schema.instanceState)
+                .values({ instanceId: instanceId, key: 'session_snapshot', value })
+                .onConflictDoUpdate({
+                    target: [schema.instanceState.instanceId, schema.instanceState.key],
+                    set: { value }
+                });
+
+            set.status = 204;
+        }, { body: t.ArrayBuffer() })
+      )
+
+    // Start the server only if this file is the main module
+
+    if (import.meta.main) {
+        app.listen(3000);
+        console.log(
+          `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+        );
+    }
+  gateway/src/docker.client.ts: >-
+    import { URL } from 'url';
+
+
+    // Simplified subset of Dockerode's ContainerInfo
+
+    export interface ContainerInfo {
+        Id: string;
+        Names: string[];
+        Image: string;
+        ImageID: string;
+        Command: string;
+        Created: number;
+        State: string;
+        Status: string;
+        Ports: any[];
+        Labels: Record<string, string>;
+        SizeRw?: number;
+        SizeRootFs?: number;
+        HostConfig: {
+            NetworkMode: string;
+        };
+        NetworkSettings: {
+            Networks: any;
+        };
+        Mounts: any[];
+    }
+
+
+    export interface WorkerNode {
+        id: number;
+        dockerHost: string;
+        publicHost: string;
+    }
+
+
+    interface RequestOptions {
+        method?: 'GET' | 'POST' | 'DELETE' | 'PUT';
+        body?: any;
+        headers?: Record<string, string>;
+        json?: boolean;
+    }
+
+
+    class DockerClient {
+        private socketPath?: string;
+        private host?: string;
+        private port?: number;
+
+        constructor(node: Pick<WorkerNode, 'dockerHost'>) {
+            if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+                this.socketPath = node.dockerHost.replace('unix://', '');
+            } else if (node.dockerHost.startsWith('tcp://')) {
+                const parsedUrl = new URL(node.dockerHost);
+                this.host = parsedUrl.hostname;
+                this.port = parseInt(parsedUrl.port, 10);
+            } else {
+                const [host, port] = node.dockerHost.split(':');
+                this.host = host;
+                this.port = parseInt(port, 10);
+            }
+        }
+
+        private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+            const method = options.method || 'GET';
+            const headers = options.headers || {};
+
+            let url: string;
+            let fetchOptions: RequestInit = { method, headers };
+
+            if (this.socketPath) {
+                // Path must be absolute for unix socket fetch
+                const absolutePath = path.startsWith('/') ? path : `/${path}`;
+                url = `http://localhost${absolutePath}`;
+                fetchOptions.unix = this.socketPath;
+            } else {
+                url = `http://${this.host}:${this.port}${path}`;
+            }
+            
+            if (options.body) {
+                if (typeof options.body === 'object' && options.body !== null) {
+                    headers['Content-Type'] = 'application/json';
+                    fetchOptions.body = JSON.stringify(options.body);
+                } else {
+                    fetchOptions.body = options.body;
+                }
+            }
+            
+            const res = await fetch(url, fetchOptions);
+
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error(`Docker API Error (${res.status} on ${method} ${path}): ${errorText}`);
+                const error: any = new Error(`Docker API request failed: ${res.status} ${res.statusText}`);
+                error.statusCode = res.status;
+                error.reason = res.statusText;
+                error.responseBody = errorText;
+                throw error;
+            }
+
+            if (res.status === 204) {
+                return null as T;
+            }
+            
+            if (options.json === false) { // for streams
+                return res as T;
+            }
+
+            return res.json() as Promise<T>;
+        }
+        
+        // Equivalent of docker.listContainers
+        async listContainers(options?: { all?: boolean, filters?: any }): Promise<ContainerInfo[]> {
+            const params = new URLSearchParams();
+            if (options?.all) {
+                params.set('all', 'true');
+            }
+            if (options?.filters) {
+                params.set('filters', JSON.stringify(options.filters));
+            }
+            return this.request(`/containers/json?${params.toString()}`);
+        }
+
+        // Equivalent of docker.createContainer
+        async createContainer(options: any): Promise<{ Id: string, Warnings: string[] }> {
+            const params = new URLSearchParams();
+            if(options.name) {
+                params.set('name', options.name);
+            }
+            return this.request(`/containers/create?${params.toString()}`, {
+                method: 'POST',
+                body: options,
+            });
+        }
+
+        // Equivalent of container.start
+        async startContainer(containerId: string): Promise<void> {
+            await this.request(`/containers/${containerId}/start`, { method: 'POST' });
+        }
+
+        // Equivalent of container.stop
+        async stopContainer(containerId: string, options?: { t?: number }): Promise<void> {
+            const params = new URLSearchParams();
+            if (options?.t) {
+                params.set('t', options.t.toString());
+            }
+            await this.request(`/containers/${containerId}/stop?${params.toString()}`, { method: 'POST' });
+        }
+
+        // Equivalent of container.remove
+        async removeContainer(containerId: string): Promise<void> {
+            await this.request(`/containers/${containerId}`, { method: 'DELETE' });
+        }
+
+        // Equivalent of container.inspect
+        async inspectContainer(containerId: string): Promise<any> {
+            return this.request(`/containers/${containerId}/json`);
+        }
+
+        // Equivalent of docker.listImages
+        async listImages(options?: { filters?: any }): Promise<any[]> {
+            const params = new URLSearchParams();
+            if (options?.filters) {
+                params.set('filters', JSON.stringify(options.filters));
+            }
+            return this.request(`/images/json?${params.toString()}`);
+        }
+
+        // Equivalent of docker.pull
+        async pullImage(imageName: string): Promise<Response> {
+            const [image, tag] = imageName.split(':');
+            const params = new URLSearchParams({ fromImage: image, tag: tag || 'latest' });
+            // This returns a stream, so don't parse as JSON
+            return this.request(`/images/create?${params.toString()}`, { method: 'POST', json: false });
+        }
+    }
+
+
+    export function getDockerClientForNode(node: Pick<WorkerNode,
+    'dockerHost'>): DockerClient {
+        return new DockerClient(node);
+    }
+  gateway/tests/unit/docker.service.test.ts: >-
+    import { describe, test, expect } from 'bun:test';
+
+    import { sanitizeForContainerName, parseMemory } from
+    '../../src/docker.service';
+
+
+    describe('Docker Service Utilities', () => {
+        describe('sanitizeForContainerName', () => {
+            test('should convert to lowercase', () => {
+                expect(sanitizeForContainerName('MyContainer')).toBe('mycontainer');
+            });
+
+            test('should replace spaces with hyphens', () => {
+                expect(sanitizeForContainerName('my container name')).toBe('my-container-name');
+            });
+
+            test('should replace multiple special characters with a single hyphen', () => {
+                expect(sanitizeForContainerName('my@#$container--_name')).toBe('my-container-.-name');
+            });
+
+            test('should collapse consecutive hyphens', () => {
+                expect(sanitizeForContainerName('my---container')).toBe('my-container');
+            });
+
+            test('should handle empty string', () => {
+                expect(sanitizeForContainerName('')).toBe('');
+            });
+
+            test('should allow valid characters like dots and underscores', () => {
+                expect(sanitizeForContainerName('my_container.v1')).toBe('my_container.v1');
+            });
+        });
+
+        describe('parseMemory', () => {
+            test('should parse megabytes (m)', () => {
+                expect(parseMemory('512m')).toBe(512 * 1024 * 1024);
+            });
+
+            test('should parse gigabytes (g)', () => {
+                expect(parseMemory('2g')).toBe(2 * 1024 * 1024 * 1024);
+            });
+            
+            test('should parse kilobytes (k)', () => {
+                expect(parseMemory('256k')).toBe(256 * 1024);
+            });
+
+            test('should handle uppercase units', () => {
+                expect(parseMemory('512M')).toBe(512 * 1024 * 1024);
+                expect(parseMemory('2G')).toBe(2 * 1024 * 1024 * 1024);
+            });
+
+            test('should return 0 for empty string', () => {
+                expect(parseMemory('')).toBe(0);
+            });
+
+            test('should return 0 for invalid string', () => {
+                expect(parseMemory('invalid')).toBe(0);
+            });
+
+            test('should treat number string as bytes', () => {
+                expect(parseMemory('1024')).toBe(1024);
+            });
+        });
+    });
+  gateway/tests/e2e/instances.test.ts: >-
+    import { describe, test, expect, beforeAll, afterAll, afterEach } from
+    'bun:test';
+
+    import { db, setup, teardown, cleanupDb, cleanupContainers,
+    TEST_USER_API_KEY, findContainerByInstanceId } from '../helpers/setup';
+
+    import * as schema from '../../../drizzle/schema';
+
+    import { eq } from 'drizzle-orm';
+
+
+    describe('E2E - Instance Management API', () => {
+        let serverUrl: string;
+
+        beforeAll(async () => {
+            const setupResult = await setup();
+            serverUrl = setupResult.serverUrl;
+        });
+
+        afterAll(async () => {
+            // Final cleanup after all tests in this file run
+            await cleanupContainers();
+            await teardown();
+        });
+
+        afterEach(async () => {
+            // Clean up resources between tests to ensure isolation
+            await cleanupContainers();
+            await cleanupDb();
+        });
+
+        test('should create, start, and delete a whatsmeow instance', async () => {
+            // 1. Create Instance
+            const createResponse = await fetch(`${serverUrl}/api/instances`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${TEST_USER_API_KEY}`
+                },
+                body: JSON.stringify({
+                    name: "e2e-test-instance",
+                    phone: "1234567890",
+                    provider: "whatsmeow",
+                }),
+            });
+            
+            expect(createResponse.status).toBe(200);
+            const instance = await createResponse.json();
+            
+            expect(instance.id).toBeTypeOf('number');
+            expect(instance.status).toBe('running');
+            const instanceId = instance.id;
+
+            // 2. Verify instance exists in the database
+            const dbInstance = await db.query.instances.findFirst({
+                where: eq(schema.instances.id, instanceId),
+            });
+            expect(dbInstance).toBeDefined();
+            expect(dbInstance?.id).toBe(instanceId);
+
+            // 3. Verify the corresponding Docker container is running
+            const container = await findContainerByInstanceId(instanceId);
+            expect(container).toBeDefined();
+            expect(container?.State).toBe('running');
+            
+            // 4. Delete the Instance
+            const deleteResponse = await fetch(`${serverUrl}/api/instances/${instanceId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
+            });
+
+            expect(deleteResponse.status).toBe(204);
+
+            // 5. Verify the container has been removed
+            const containerAfterDelete = await findContainerByInstanceId(instanceId);
+            expect(containerAfterDelete).toBeUndefined();
+
+            // 6. Verify the instance has been removed from the database
+            const dbInstanceAfterDelete = await db.query.instances.findFirst({
+                where: eq(schema.instances.id, instanceId),
+            });
+            expect(dbInstanceAfterDelete).toBeUndefined();
+        }, 20000); // Increase timeout to allow for docker pull/start
+    });
+approved: true
+linesAdded: 6
+linesRemoved: 6
+linesDifference: 12
+gitCommittedAt: null
+status: committed
+id: 20

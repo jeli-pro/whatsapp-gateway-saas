@@ -9,7 +9,6 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/dockerode": "latest",
     "@typescript-eslint/eslint-plugin": "latest",
     "@typescript-eslint/parser": "latest",
     "bun-types": "latest",
@@ -22,7 +21,6 @@
   "dependencies": {
     "elysia": "latest",
     "drizzle-orm": "latest",
-    "postgres": "latest",
-    "dockerode": "latest"
+    "postgres": "latest"
   }
 }

@@ -7,7 +7,7 @@ based on readme.md , implement test cases . codebase compliance rules;
 3. No unknown or any type
 4. tests/[e2e|integration|unit]/[domain].test.ts files & dirs
 5. Use `bun test`. Write isolated, idempotent tests. Do not mock internal application logic. real.
-6. DRY
+6. test should clean on every run with creator destroyer
 
 === DONE
 

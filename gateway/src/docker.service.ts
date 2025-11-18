@@ -1,24 +1,10 @@
-import Dockerode from 'dockerode';
-import { URL } from 'url';
+import { getDockerClientForNode, type ContainerInfo } from './docker.client';
 
 // A simple representation of a worker node, passed from the API layer.
 export interface WorkerNode {
     id: number;
     dockerHost: string;
     publicHost: string;
-}
-
-function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): Dockerode {
-    if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
-        return new Dockerode({ socketPath: node.dockerHost.replace('unix://', '') });
-    }
-    if (node.dockerHost.startsWith('tcp://')) {
-        const parsedUrl = new URL(node.dockerHost);
-        return new Dockerode({ host: parsedUrl.hostname, port: parsedUrl.port });
-    }
-    // Fallback for simple host:port
-    const [host, port] = node.dockerHost.split(':');
-    return new Dockerode({ host, port: parseInt(port, 10) });
 }
 
 function getImageForProvider(provider: string): string {
@@ -68,7 +54,7 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     const internalApiSecret = process.env.INTERNAL_API_SECRET;
 
     // 2. Create the container
-    const container = await docker.createContainer({
+    const createResponse = await docker.createContainer({
         Image: DOCKER_IMAGE,
         name: containerName,
         Env: [
@@ -100,10 +86,10 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     });
 
     // 3. Start the container
-    await container.start();
-    console.log(`Container started with ID: ${container.id}`);
+    await docker.startContainer(createResponse.Id);
+    console.log(`Container started with ID: ${createResponse.Id}`);
 
-    return container.inspect();
+    return docker.inspectContainer(createResponse.Id);
 }
 
 export async function stopAndRemoveContainer(instanceId: number, node: WorkerNode) {
@@ -116,15 +102,14 @@ export async function stopAndRemoveContainer(instanceId: number, node: WorkerNod
         }
 
         console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
-        const containerInstance = docker.getContainer(container.Id);
         
         // Stop with a 10-second timeout to allow graceful shutdown
-        await containerInstance.stop({ t: 10 }).catch(err => {
+        await docker.stopContainer(container.Id, { t: 10 }).catch(err => {
             // Ignore "container already stopped" or "no such container" errors
             if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
         });
 
-        await containerInstance.remove().catch(err => {
+        await docker.removeContainer(container.Id).catch(err => {
              // Ignore "no such container" errors
             if (err.statusCode !== 404) throw err;
         });
@@ -139,7 +124,7 @@ export async function stopAndRemoveContainer(instanceId: number, node: WorkerNod
     }
 }
 
-export async function findContainer(instanceId: number, node: WorkerNode): Promise<Dockerode.ContainerInfo | null> {
+export async function findContainer(instanceId: number, node: WorkerNode): Promise<ContainerInfo | null> {
     const docker = getDockerClientForNode(node);
     try {
         const containers = await docker.listContainers({
@@ -173,11 +158,10 @@ async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
         }
 
         console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
-        const pullStream = await docker.pull(imageName);
-        
-        await new Promise<void>((resolve, reject) => {
-            docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
-        });
+        // The pull response is a stream of progress events. We just need to wait for it to finish.
+        const pullResponse = await docker.pullImage(imageName);
+        // Consuming the body ensures we wait for the pull to complete.
+        await pullResponse.text();
 
         console.log(`Image ${imageName} pulled successfully on node.`);
     } catch (error) {

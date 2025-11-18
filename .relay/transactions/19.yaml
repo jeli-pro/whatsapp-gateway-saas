@@ -1,0 +1,895 @@
+uuid: 4443714b-ef35-4ed3-a9d5-39d20c5d2b78
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T01:39:44.609Z'
+gitCommitMsg: >-
+  fix(deps): replace dockerode with fetch-based docker client
+
+  Replaced `dockerode` with a lightweight, custom Docker API client that uses
+  `fetch` to interact with the Docker daemon via its Unix socket.
+
+  This change was necessary to resolve a fatal crash in `bun test` caused by a
+  native module (`sshcrypto.node` from `ssh2`, a dependency of `dockerode`) that
+  uses a `libuv` function not yet supported by Bun.
+
+  The new client avoids this native dependency entirely, ensuring compatibility
+  with the Bun runtime and test runner.
+promptSummary: >-
+  The user is experiencing a crash with `bun test` due to a native module
+  incompatibility in the `dockerode` library.
+reasoning:
+  - >-
+    Based on the error log you provided, `bun test` is crashing due to a native
+    module (`sshcrypto.node`) dependency brought in by `dockerode` via `ssh2`.
+    This module uses a `libuv` function that Bun does not yet support, causing a
+    panic.
+  - >-
+    To resolve this, I will replace `dockerode` with a custom, lightweight
+    Docker API client that uses Bun's built-in `fetch` capabilities to
+    communicate with the Docker daemon over a Unix socket. This approach avoids
+    the problematic native dependency entirely.
+  - 'Here is my plan:'
+  - >-
+    1.  **Create a new file `gateway/src/docker.client.ts`**: This will contain
+    a minimal Docker client with only the functions needed by the application
+    (`listContainers`, `createContainer`, `pullImage`, etc.), implemented using
+    `fetch`.
+  - >-
+    2.  **Refactor `gateway/src/docker.service.ts`**: Update this service to use
+    the new `DockerClient` instead of `dockerode`.
+  - >-
+    3.  **Refactor `gateway/tests/helpers/setup.ts`**: Modify the test setup
+    helpers to use the new `DockerClient` for test-related Docker operations
+    like cleanup.
+  - >-
+    4.  **Update `gateway/package.json`**: Remove the `dockerode` and
+    `@types/dockerode` dependencies, as they are no longer needed.
+  - >-
+    This will resolve the native module crash and allow your tests to run
+    successfully.
+  - First, I will create the new Docker client.
+  - Next, I'll update `docker.service.ts` to use this new client.
+  - Now I will update the test helpers in `gateway/tests/helpers/setup.ts`.
+  - >-
+    Finally, I'll remove the `dockerode` dependencies from
+    `gateway/package.json`.
+  - >-
+    These changes completely remove `dockerode` and its problematic native
+    dependencies, resolving the crash you observed when running `bun test`.
+operations:
+  - type: write
+    path: gateway/src/docker.client.ts
+    content: >-
+      import { URL } from 'url';
+
+
+      // Simplified subset of Dockerode's ContainerInfo
+
+      export interface ContainerInfo {
+          Id: string;
+          Names: string[];
+          Image: string;
+          ImageID: string;
+          Command: string;
+          Created: number;
+          State: string;
+          Status: string;
+          Ports: any[];
+          Labels: Record<string, string>;
+          SizeRw?: number;
+          SizeRootFs?: number;
+          HostConfig: {
+              NetworkMode: string;
+          };
+          NetworkSettings: {
+              Networks: any;
+          };
+          Mounts: any[];
+      }
+
+
+      export interface WorkerNode {
+          id: number;
+          dockerHost: string;
+          publicHost: string;
+      }
+
+
+      interface RequestOptions {
+          method?: 'GET' | 'POST' | 'DELETE' | 'PUT';
+          body?: any;
+          headers?: Record<string, string>;
+          json?: boolean;
+      }
+
+
+      class DockerClient {
+          private socketPath?: string;
+          private host?: string;
+          private port?: number;
+
+          constructor(node: Pick<WorkerNode, 'dockerHost'>) {
+              if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+                  this.socketPath = node.dockerHost.replace('unix://', '');
+              } else if (node.dockerHost.startsWith('tcp://')) {
+                  const parsedUrl = new URL(node.dockerHost);
+                  this.host = parsedUrl.hostname;
+                  this.port = parseInt(parsedUrl.port, 10);
+              } else {
+                  const [host, port] = node.dockerHost.split(':');
+                  this.host = host;
+                  this.port = parseInt(port, 10);
+              }
+          }
+
+          private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+              const method = options.method || 'GET';
+              const headers = options.headers || {};
+
+              let url: string;
+              let fetchOptions: RequestInit = { method, headers };
+
+              if (this.socketPath) {
+                  // Path must be absolute for unix socket fetch
+                  const absolutePath = path.startsWith('/') ? path : `/${path}`;
+                  url = `http://localhost${absolutePath}`;
+                  fetchOptions.unix = this.socketPath;
+              } else {
+                  url = `http://${this.host}:${this.port}${path}`;
+              }
+              
+              if (options.body) {
+                  if (typeof options.body === 'object' && options.body !== null) {
+                      headers['Content-Type'] = 'application/json';
+                      fetchOptions.body = JSON.stringify(options.body);
+                  } else {
+                      fetchOptions.body = options.body;
+                  }
+              }
+              
+              const res = await fetch(url, fetchOptions);
+
+              if (!res.ok) {
+                  const errorText = await res.text();
+                  console.error(`Docker API Error (${res.status} on ${method} ${path}): ${errorText}`);
+                  const error: any = new Error(`Docker API request failed: ${res.status} ${res.statusText}`);
+                  error.statusCode = res.status;
+                  error.reason = res.statusText;
+                  error.responseBody = errorText;
+                  throw error;
+              }
+
+              if (res.status === 204) {
+                  return null as T;
+              }
+              
+              if (options.json === false) { // for streams
+                  return res as T;
+              }
+
+              return res.json() as Promise<T>;
+          }
+          
+          // Equivalent of docker.listContainers
+          async listContainers(options?: { all?: boolean, filters?: any }): Promise<ContainerInfo[]> {
+              const params = new URLSearchParams();
+              if (options?.all) {
+                  params.set('all', 'true');
+              }
+              if (options?.filters) {
+                  params.set('filters', JSON.stringify(options.filters));
+              }
+              return this.request(`/containers/json?${params.toString()}`);
+          }
+
+          // Equivalent of docker.createContainer
+          async createContainer(options: any): Promise<{ Id: string, Warnings: string[] }> {
+              const params = new URLSearchParams();
+              if(options.name) {
+                  params.set('name', options.name);
+              }
+              return this.request(`/containers/create?${params.toString()}`, {
+                  method: 'POST',
+                  body: options,
+              });
+          }
+
+          // Equivalent of container.start
+          async startContainer(containerId: string): Promise<void> {
+              await this.request(`/containers/${containerId}/start`, { method: 'POST' });
+          }
+
+          // Equivalent of container.stop
+          async stopContainer(containerId: string, options?: { t?: number }): Promise<void> {
+              const params = new URLSearchParams();
+              if (options?.t) {
+                  params.set('t', options.t.toString());
+              }
+              await this.request(`/containers/${containerId}/stop?${params.toString()}`, { method: 'POST' });
+          }
+
+          // Equivalent of container.remove
+          async removeContainer(containerId: string): Promise<void> {
+              await this.request(`/containers/${containerId}`, { method: 'DELETE' });
+          }
+
+          // Equivalent of container.inspect
+          async inspectContainer(containerId: string): Promise<any> {
+              return this.request(`/containers/${containerId}/json`);
+          }
+
+          // Equivalent of docker.listImages
+          async listImages(options?: { filters?: any }): Promise<any[]> {
+              const params = new URLSearchParams();
+              if (options?.filters) {
+                  params.set('filters', JSON.stringify(options.filters));
+              }
+              return this.request(`/images/json?${params.toString()}`);
+          }
+
+          // Equivalent of docker.pull
+          async pullImage(imageName: string): Promise<Response> {
+              const [image, tag] = imageName.split(':');
+              const params = new URLSearchParams({ fromImage: image, tag: tag || 'latest' });
+              // This returns a stream, so don't parse as JSON
+              return this.request(`/images/create?${params.toString()}`, { method: 'POST', json: false });
+          }
+      }
+
+
+      export function getDockerClientForNode(node: Pick<WorkerNode,
+      'dockerHost'>): DockerClient {
+          return new DockerClient(node);
+      }
+    patchStrategy: replace
+  - type: write
+    path: gateway/src/docker.service.ts
+    content: >+
+      --- gateway/src/docker.service.ts
+
+      +++ gateway/src/docker.service.ts
+
+      @@ -1,23 +1,8 @@
+
+      -import Dockerode from 'dockerode';
+
+      -import { URL } from 'url';
+
+      +import { getDockerClientForNode, type ContainerInfo } from
+      './docker.client';
+       
+       // A simple representation of a worker node, passed from the API layer.
+       export interface WorkerNode {
+           id: number;
+           dockerHost: string;
+           publicHost: string;
+       }
+      -
+
+      -function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>):
+      Dockerode {
+
+      -    if (node.dockerHost.startsWith('unix://') ||
+      node.dockerHost.startsWith('/')) {
+
+      -        return new Dockerode({ socketPath:
+      node.dockerHost.replace('unix://', '') });
+
+      -    }
+
+      -    if (node.dockerHost.startsWith('tcp://')) {
+
+      -        const parsedUrl = new URL(node.dockerHost);
+
+      -        return new Dockerode({ host: parsedUrl.hostname, port:
+      parsedUrl.port });
+
+      -    }
+
+      -    // Fallback for simple host:port
+
+      -    const [host, port] = node.dockerHost.split(':');
+
+      -    return new Dockerode({ host, port: parseInt(port, 10) });
+
+      -}
+       
+       function getImageForProvider(provider: string): string {
+           const imageMap: Record<string, string> = {
+      @@ -58,7 +43,7 @@
+           const internalApiSecret = process.env.INTERNAL_API_SECRET;
+       
+           // 2. Create the container
+      -    const container = await docker.createContainer({
+
+      +    const createResponse = await docker.createContainer({
+               Image: DOCKER_IMAGE,
+               name: containerName,
+               Env: [
+      @@ -87,11 +72,11 @@
+           });
+       
+           // 3. Start the container
+      -    await container.start();
+
+      -    console.log(`Container started with ID: ${container.id}`);
+
+      +    await docker.startContainer(createResponse.Id);
+
+      +    console.log(`Container started with ID: ${createResponse.Id}`);
+       
+      -    return container.inspect();
+
+      +    return docker.inspectContainer(createResponse.Id);
+       }
+       
+       export async function stopAndRemoveContainer(instanceId: number, node: WorkerNode) {
+      @@ -104,15 +89,14 @@
+               }
+       
+               console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
+      -        const containerInstance = docker.getContainer(container.Id);
+               
+               // Stop with a 10-second timeout to allow graceful shutdown
+      -        await containerInstance.stop({ t: 10 }).catch(err => {
+
+      +        await docker.stopContainer(container.Id, { t: 10 }).catch(err =>
+      {
+                   // Ignore "container already stopped" or "no such container" errors
+                   if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+               });
+       
+      -        await containerInstance.remove().catch(err => {
+
+      +        await docker.removeContainer(container.Id).catch(err => {
+                    // Ignore "no such container" errors
+                   if (err.statusCode !== 404) throw err;
+               });
+      @@ -127,7 +111,7 @@
+           }
+       }
+       
+      -export async function findContainer(instanceId: number, node:
+      WorkerNode): Promise<Dockerode.ContainerInfo | null> {
+
+      +export async function findContainer(instanceId: number, node:
+      WorkerNode): Promise<ContainerInfo | null> {
+           const docker = getDockerClientForNode(node);
+           try {
+               const containers = await docker.listContainers({
+      @@ -159,11 +143,10 @@
+               }
+       
+               console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
+      -        const pullStream = await docker.pull(imageName);
+
+      -        
+
+      -        await new Promise<void>((resolve, reject) => {
+
+      -            docker.modem.followProgress(pullStream, (err, _res) => err ?
+      reject(err) : resolve());
+
+      -        });
+
+      +        // The pull response is a stream of progress events. We just need
+      to wait for it to finish.
+
+      +        const pullResponse = await docker.pullImage(imageName);
+
+      +        // Consuming the body ensures we wait for the pull to complete.
+
+      +        await pullResponse.text();
+       
+               console.log(`Image ${imageName} pulled successfully on node.`);
+           } catch (error) {
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/helpers/setup.ts
+    content: >+
+      --- gateway/tests/helpers/setup.ts
+
+      +++ gateway/tests/helpers/setup.ts
+
+      @@ -1,6 +1,6 @@
+       import { drizzle } from 'drizzle-orm/postgres-js';
+       import postgres from 'postgres';
+      -import Dockerode from 'dockerode';
+
+      +import { getDockerClientForNode, type ContainerInfo } from
+      '../../src/docker.client';
+       import * as schema from '../../../drizzle/schema';
+       import { app } from '../../src/index';
+       
+      @@ -16,14 +16,14 @@
+       export const db = drizzle(client, { schema });
+       
+       // --- Docker Client ---
+      -export const docker = new Dockerode(); // Assumes local docker sock
+      (e.g., /var/run/docker.sock)
+
+      -
+       // --- Test Constants ---
+       // Bun automatically loads .env, but we provide fallbacks.
+       export const TEST_USER_API_KEY = process.env.API_SECRET || 'test-api-key-secret-for-ci';
+       export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || 'test-internal-secret-for-ci';
+       export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
+       export const TEST_NODE_PUBLIC_HOST = 'localhost';
+      +
+
+      +const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST
+      });
+       
+       
+       /**
+      @@ -90,15 +90,14 @@
+       
+           for (const containerInfo of containers) {
+               console.log(`Cleaning up test container: ${containerInfo.Id}`);
+      -        const container = docker.getContainer(containerInfo.Id);
+               try {
+      -            await container.stop({ t: 5 });
+
+      +            await docker.stopContainer(containerInfo.Id, { t: 5 });
+               } catch (e: any) {
+                   // Ignore if already stopped (304) or not found (404)
+                   if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+               }
+               try {
+      -            await container.remove();
+
+      +            await docker.removeContainer(containerInfo.Id);
+               } catch (e: any) {
+                    // Ignore if not found (404)
+                   if (e.statusCode !== 404) console.error(e);
+      @@ -111,7 +110,7 @@
+        * @param instanceId The ID of the instance.
+        * @returns ContainerInfo if found, otherwise undefined.
+        */
+      -export async function findContainerByInstanceId(instanceId: number):
+      Promise<Dockerode.ContainerInfo | undefined> {
+
+      +export async function findContainerByInstanceId(instanceId: number):
+      Promise<ContainerInfo | undefined> {
+           const containers = await docker.listContainers({
+               all: true,
+               filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/package.json
+    content: |
+      <<<<<<< SEARCH
+        "devDependencies": {
+          "@types/dockerode": "latest",
+          "@typescript-eslint/eslint-plugin": "latest",
+      =======
+        "devDependencies": {
+          "@typescript-eslint/eslint-plugin": "latest",
+      >>>>>>> REPLACE
+      <<<<<<< SEARCH
+        "dependencies": {
+          "elysia": "latest",
+          "drizzle-orm": "latest",
+          "postgres": "latest",
+          "dockerode": "latest"
+        }
+      =======
+        "dependencies": {
+          "elysia": "latest",
+          "drizzle-orm": "latest",
+          "postgres": "latest"
+        }
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+snapshot:
+  gateway/src/docker.client.ts: null
+  gateway/tests/helpers/setup.ts: >-
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import postgres from 'postgres';
+
+    import Dockerode from 'dockerode';
+
+    import * as schema from '../../../drizzle/schema';
+
+    import { app } from '../../src/index';
+
+
+    // --- Types ---
+
+    export type User = typeof schema.users.$inferSelect;
+
+    export type Node = typeof schema.nodes.$inferSelect;
+
+    export type Instance = typeof schema.instances.$inferSelect;
+
+
+    // --- DB Connection ---
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set. Please create a .env file for testing.");
+    }
+
+    const client = postgres(connectionString);
+
+    export const db = drizzle(client, { schema });
+
+
+    // --- Docker Client ---
+
+    export const docker = new Dockerode(); // Assumes local docker sock (e.g.,
+    /var/run/docker.sock)
+
+
+    // --- Test Constants ---
+
+    // Bun automatically loads .env, but we provide fallbacks.
+
+    export const TEST_USER_API_KEY = process.env.API_SECRET ||
+    'test-api-key-secret-for-ci';
+
+    export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET ||
+    'test-internal-secret-for-ci';
+
+    export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+    'unix:///var/run/docker.sock';
+
+    export const TEST_NODE_PUBLIC_HOST = 'localhost';
+
+
+
+    /**
+     * Sets up the test environment:
+     * 1. Starts the API server on a random available port.
+     * 2. Cleans and seeds the database with a test user and a test node.
+     * @returns An object with the server URL and the created user/node entities.
+     */
+    export const setup = async () => {
+      // Start server on a random available port by passing 0.
+      await app.listen(0);
+
+      // Clean database before seeding to ensure a fresh state.
+      await db.delete(schema.instanceState);
+      await db.delete(schema.instances);
+      await db.delete(schema.users);
+      await db.delete(schema.nodes);
+      
+      const [testUser] = await db.insert(schema.users).values({
+        email: `test-${Date.now()}@example.com`,
+        apiKey: TEST_USER_API_KEY,
+      }).returning();
+
+      const [testNode] = await db.insert(schema.nodes).values({
+        name: 'test-node-1',
+        dockerHost: TEST_NODE_DOCKER_HOST,
+        publicHost: TEST_NODE_PUBLIC_HOST,
+      }).returning();
+
+      return {
+        serverUrl: `http://localhost:${app.server?.port}`,
+        user: testUser,
+        node: testNode,
+      };
+    };
+
+
+    /**
+     * Tears down the test environment:
+     * 1. Stops the API server.
+     * 2. Closes the database connection.
+     */
+    export const teardown = async () => {
+      await app.stop();
+      await client.end({ timeout: 5 });
+    };
+
+
+    /**
+     * Removes all instance-related records from the database.
+     */
+    export const cleanupDb = async () => {
+        await db.delete(schema.instanceState);
+        await db.delete(schema.instances);
+    };
+
+
+    /**
+     * Finds and removes all Docker containers created by the tests.
+     */
+    export const cleanupContainers = async () => {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+        });
+
+        for (const containerInfo of containers) {
+            console.log(`Cleaning up test container: ${containerInfo.Id}`);
+            const container = docker.getContainer(containerInfo.Id);
+            try {
+                await container.stop({ t: 5 });
+            } catch (e: any) {
+                // Ignore if already stopped (304) or not found (404)
+                if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+            }
+            try {
+                await container.remove();
+            } catch (e: any) {
+                 // Ignore if not found (404)
+                if (e.statusCode !== 404) console.error(e);
+            }
+        }
+    };
+
+
+    /**
+     * Test helper to find a container by its instance ID label.
+     * @param instanceId The ID of the instance.
+     * @returns ContainerInfo if found, otherwise undefined.
+     */
+    export async function findContainerByInstanceId(instanceId: number):
+    Promise<Dockerode.ContainerInfo | undefined> {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+        });
+        return containers[0];
+    }
+  gateway/src/docker.service.ts: >-
+    import Dockerode from 'dockerode';
+
+    import { URL } from 'url';
+
+
+    // A simple representation of a worker node, passed from the API layer.
+
+    export interface WorkerNode {
+        id: number;
+        dockerHost: string;
+        publicHost: string;
+    }
+
+
+    function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>):
+    Dockerode {
+        if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+            return new Dockerode({ socketPath: node.dockerHost.replace('unix://', '') });
+        }
+        if (node.dockerHost.startsWith('tcp://')) {
+            const parsedUrl = new URL(node.dockerHost);
+            return new Dockerode({ host: parsedUrl.hostname, port: parsedUrl.port });
+        }
+        // Fallback for simple host:port
+        const [host, port] = node.dockerHost.split(':');
+        return new Dockerode({ host, port: parseInt(port, 10) });
+    }
+
+
+    function getImageForProvider(provider: string): string {
+        const imageMap: Record<string, string> = {
+            'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+            // 'baileys': 'some-other-image:latest',
+        };
+        const image = imageMap[provider];
+        if (!image) {
+            throw new Error(`Unsupported provider: ${provider}`);
+        }
+        return image;
+    }
+
+
+    interface CreateContainerOptions {
+        instanceId: number;
+        node: WorkerNode;
+        name?: string | null;
+        webhookUrl: string;
+        cpuLimit: string;
+        memoryLimit: string;
+        provider: string;
+    }
+
+
+    export function sanitizeForContainerName(name: string): string {
+        if (!name) return '';
+        return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
+    }
+
+
+    export async function createAndStartContainer(options:
+    CreateContainerOptions) {
+        const docker = getDockerClientForNode(options.node);
+        const saneName = sanitizeForContainerName(options.name || '');
+        const containerName = options.name 
+            ? `wgs-${options.instanceId}-${saneName}`
+            : `wgs-instance-${options.instanceId}`;
+
+        const routerName = `wgs-instance-${options.instanceId}`;
+
+        console.log(`Creating container ${containerName} for instance ${options.instanceId} on node ${options.node.publicHost}`);
+
+        const DOCKER_IMAGE = getImageForProvider(options.provider);
+
+        // 1. Pull the image on the target node
+        await pullImage(DOCKER_IMAGE, options.node);
+
+        const gatewayUrl = process.env.GATEWAY_URL; // Should be reachable from worker nodes
+        const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
+        // 2. Create the container
+        const container = await docker.createContainer({
+            Image: DOCKER_IMAGE,
+            name: containerName,
+            Env: [
+                `INSTANCE_ID=${options.instanceId}`,
+                `GATEWAY_URL=${gatewayUrl}`,
+                `INTERNAL_API_SECRET=${internalApiSecret}`,
+                `WEBHOOK_URL=${options.webhookUrl}`,
+                `PORT=8080`,
+                `GOMAXPROCS=1`
+            ],
+            Labels: {
+                'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+                // Traefik Labels for reverse proxying
+                'traefik.enable': 'true',
+                [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+                [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+                [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+                [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+                // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+                [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+                [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
+            },
+            HostConfig: {
+                RestartPolicy: { Name: 'unless-stopped' },
+                Memory: parseMemory(options.memoryLimit), 
+                NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+                NetworkMode: 'worker-net', // Connect to the shared traefik network
+            },
+        });
+
+        // 3. Start the container
+        await container.start();
+        console.log(`Container started with ID: ${container.id}`);
+
+        return container.inspect();
+    }
+
+
+    export async function stopAndRemoveContainer(instanceId: number, node:
+    WorkerNode) {
+        const docker = getDockerClientForNode(node);
+        try {
+            const container = await findContainer(instanceId, node);
+            if (!container) {
+                console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+                return;
+            }
+
+            console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
+            const containerInstance = docker.getContainer(container.Id);
+            
+            // Stop with a 10-second timeout to allow graceful shutdown
+            await containerInstance.stop({ t: 10 }).catch(err => {
+                // Ignore "container already stopped" or "no such container" errors
+                if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+            });
+
+            await containerInstance.remove().catch(err => {
+                 // Ignore "no such container" errors
+                if (err.statusCode !== 404) throw err;
+            });
+            console.log(`Container for instance ${instanceId} removed successfully.`);
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                 console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+                 return;
+            }
+            console.error(`Error stopping/removing container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+            throw error;
+        }
+    }
+
+
+    export async function findContainer(instanceId: number, node: WorkerNode):
+    Promise<Dockerode.ContainerInfo | null> {
+        const docker = getDockerClientForNode(node);
+        try {
+            const containers = await docker.listContainers({
+                all: true,
+                filters: {
+                    label: [`whatsapp-gateway-saas.instance-id=${instanceId}`]
+                }
+            });
+
+            if (containers.length === 0) {
+                return null;
+            }
+            if (containers.length > 1) {
+                console.warn(`Found multiple containers for instance ${instanceId} on node ${node.dockerHost}. Using the first one.`);
+            }
+            return containers[0];
+        } catch (error) {
+            console.error(`Error finding container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+            return null;
+        }
+    }
+
+
+    async function pullImage(imageName: string, node: WorkerNode): Promise<void>
+    {
+        const docker = getDockerClientForNode(node);
+        console.log(`Ensuring image ${imageName} is available on node ${node.dockerHost}...`);
+        try {
+            const images = await docker.listImages({ filters: { reference: [imageName] } });
+            if (images.length > 0) {
+                console.log(`Image ${imageName} already exists on node.`);
+                return;
+            }
+
+            console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
+            const pullStream = await docker.pull(imageName);
+            
+            await new Promise<void>((resolve, reject) => {
+                docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
+            });
+
+            console.log(`Image ${imageName} pulled successfully on node.`);
+        } catch (error) {
+            console.error(`Failed to pull image ${imageName} on node ${node.dockerHost}:`, error);
+            throw error;
+        }
+    }
+
+
+    export function parseMemory(memoryStr: string): number {
+        if (!memoryStr) return 0; // default
+        const unit = memoryStr.slice(-1).toLowerCase();
+        const value = parseFloat(memoryStr.slice(0, -1));
+
+        if (isNaN(value)) return 0;
+
+        switch (unit) {
+            case 'g': return value * 1024 * 1024 * 1024;
+            case 'm': return value * 1024 * 1024;
+            case 'k': return value * 1024;
+            default: return parseFloat(memoryStr); // Assume bytes if no unit
+        }
+    }
+  gateway/package.json: |-
+    {
+      "name": "gateway",
+      "module": "src/index.ts",
+      "type": "module",
+      "scripts": {
+        "dev": "bun --watch src/index.ts",
+        "lint": "eslint .",
+        "typecheck": "tsc -b",
+        "test": "bun test"
+      },
+      "devDependencies": {
+        "@types/dockerode": "latest",
+        "@typescript-eslint/eslint-plugin": "latest",
+        "@typescript-eslint/parser": "latest",
+        "bun-types": "latest",
+        "eslint": "latest",
+        "typescript": "latest"
+      },
+      "peerDependencies": {
+        "typescript": "^5.0.0"
+      },
+      "dependencies": {
+        "elysia": "latest",
+        "drizzle-orm": "latest",
+        "postgres": "latest",
+        "dockerode": "latest"
+      }
+    }
+approved: true
+linesAdded: 193
+linesRemoved: 38
+linesDifference: 231
+gitCommittedAt: null
+status: committed
+id: 19

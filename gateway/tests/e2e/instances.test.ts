@@ -39,7 +39,7 @@ describe('E2E - Instance Management API', () => {
         });
         
         expect(createResponse.status).toBe(200);
-        const instance = await createResponse.json();
+        const instance = await createResponse.json() as { id: number; status: string; };
         
         expect(instance.id).toBeTypeOf('number');
         expect(instance.status).toBe('running');

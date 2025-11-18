@@ -35,7 +35,8 @@
       "repomix.config.json",
       "relay.config.json",
       "user.prompt.md",
-      "gateway/tsconfig.tsbuildinfo"
+      "gateway/tsconfig.tsbuildinfo",
+      "drizzle/dist"
     ]
   },
   "security": {
