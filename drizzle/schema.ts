@@ -36,7 +36,11 @@ export const instances = pgTable('instances', {
     };
 });
 
-const bytea = customType<{ data: Buffer }>({ getSQL: () => 'bytea' });
+const bytea = customType<{ data: Buffer }>({
+    dataType() {
+        return 'bytea';
+    },
+});
 
 export const instanceState = pgTable('instance_state', {
     id: serial('id').primaryKey(),

@@ -311,12 +311,13 @@ const app = new Elysia()
     .post('/state/:instanceId', async ({ params, body, set }) => {
         const instanceId = parseInt(params.instanceId, 10);
         const { key, value } = body;
+        const valueAsBuffer = Buffer.from(value);
         
         await db.insert(schema.instanceState)
-            .values({ instanceId, key, value })
+            .values({ instanceId, key, value: valueAsBuffer })
             .onConflictDoUpdate({
                 target: [schema.instanceState.instanceId, schema.instanceState.key],
-                set: { value: value }
+                set: { value: valueAsBuffer }
             });
         
         set.status = 204;
@@ -367,13 +368,11 @@ const app = new Elysia()
             .values({ instanceId: instanceId, key: 'session_snapshot', value })
             .onConflictDoUpdate({
                 target: [schema.instanceState.instanceId, schema.instanceState.key],
-                set: { value: value }
+                set: { value }
             });
 
         set.status = 204;
-    }, {
-        type: 'arrayBuffer', // Elysia will parse the body as ArrayBuffer
-    })
+    }, { body: t.ArrayBuffer() })
   )
   .listen(3000);
 

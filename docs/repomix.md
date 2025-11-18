@@ -18,6 +18,7 @@ providers/
     go.mod
     main.go
 .env.example
+docker-compose.worker.yml
 drizzle.config.ts
 package.json
 README.md
@@ -275,6 +276,42 @@ All requirements fulfilled:
 - ✅ Security best practices implemented
 - ✅ CI/CD pipeline compatibility
 - ✅ Resource efficiency (14MB memory, 44MB image)
+````
+
+## File: docker-compose.worker.yml
+````yaml
+version: "3.9"
+
+services:
+  traefik:
+    image: "traefik:v3.0"
+    container_name: "traefik"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL:-your-email@example.com}" # Change this!
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      # - "8080:8080" # Traefik Dashboard - uncomment if you need it, but be careful exposing it.
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./letsencrypt:/letsencrypt"
+    networks:
+      - worker-net
+
+networks:
+  worker-net:
+    driver: bridge
 ````
 
 ## File: drizzle.config.ts
@@ -714,10 +751,31 @@ This is not an official WhatsApp product. Use it for legitimate purposes only. S
 - Issues via GitHub.
 ````
 
+## File: providers/whatsmeow/go.mod
+````
+module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow
+
+go 1.23
+
+require (
+	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	go.mau.fi/whatsmeow v0.0.0-20251116104239-3aca43070cd4
+	google.golang.org/protobuf v1.35.2
+)
+````
+
 ## File: drizzle/schema.ts
 ````typescript
-import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique, customType } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+export const nodes = pgTable('nodes', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 256 }).notNull().unique(),
+  dockerHost: text('docker_host').notNull(), // e.g., 'tcp://1.2.3.4:2375'
+  publicHost: text('public_host').notNull(), // e.g., 'vps1.example.com'
+});
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -731,6 +789,7 @@ export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'run
 
 export const instances = pgTable('instances', {
     id: serial('id').primaryKey(),
+    nodeId: integer('node_id').notNull().references(() => nodes.id, { onDelete: 'restrict' }),
     userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     name: varchar('name', { length: 256 }),
     phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
@@ -746,11 +805,13 @@ export const instances = pgTable('instances', {
     };
 });
 
+const bytea = customType<{ data: Buffer }>({ getSQL: () => 'bytea' });
+
 export const instanceState = pgTable('instance_state', {
     id: serial('id').primaryKey(),
     instanceId: integer('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
     key: varchar('key', { length: 255 }).notNull(),
-    value: text('value').notNull(),
+    value: bytea('value').notNull(),
 }, (table) => {
     return {
         instanceKeyIdx: unique('instance_key_idx').on(table.instanceId, table.key),
@@ -766,6 +827,10 @@ export const instanceRelations = relations(instances, ({ one, many }) => ({
     fields: [instances.userId],
     references: [users.id],
   }),
+  node: one(nodes, {
+    fields: [instances.nodeId],
+    references: [nodes.id],
+  }),
   state: many(instanceState),
 }));
 
@@ -775,190 +840,10 @@ export const instanceStateRelations = relations(instanceState, ({ one }) => ({
         references: [instances.id],
     }),
 }));
-````
 
-## File: providers/whatsmeow/go.mod
-````
-module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow
-
-go 1.23
-
-require (
-	github.com/mattn/go-sqlite3 v1.14.22
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	go.mau.fi/whatsmeow v0.0.0-20251116104239-3aca43070cd4
-	google.golang.org/protobuf v1.35.2
-)
-````
-
-## File: gateway/src/docker.service.ts
-````typescript
-import Dockerode from 'dockerode';
-
-export const docker = new Dockerode(); // Assumes DOCKER_HOST or default socket path is configured
-
-function getImageForProvider(provider: string): string {
-    const imageMap: Record<string, string> = {
-        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
-        // 'baileys': 'some-other-image:latest',
-    };
-    const image = imageMap[provider];
-    if (!image) {
-        throw new Error(`Unsupported provider: ${provider}`);
-    }
-    return image;
-}
-
-interface CreateContainerOptions {
-    instanceId: number;
-    name?: string | null;
-    webhookUrl: string;
-    cpuLimit: string;
-    memoryLimit: string;
-    provider: string;
-}
-
-function sanitizeForContainerName(name: string): string {
-    if (!name) return '';
-    return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
-}
-
-export async function createAndStartContainer(options: CreateContainerOptions) {
-    const saneName = sanitizeForContainerName(options.name || '');
-    const containerName = options.name 
-        ? `wgs-${options.instanceId}-${saneName}`
-        : `wgs-instance-${options.instanceId}`;
-
-    console.log(`Creating container ${containerName} for instance ${options.instanceId}`);
-
-    const DOCKER_IMAGE = getImageForProvider(options.provider);
-
-    // 1. Pull the image
-    await pullImage(DOCKER_IMAGE);
-
-    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
-    const internalApiSecret = process.env.INTERNAL_API_SECRET;
-
-    // 2. Create the container
-    const container = await docker.createContainer({
-        Image: DOCKER_IMAGE,
-        name: containerName,
-        Env: [
-            `INSTANCE_ID=${options.instanceId}`,
-            `GATEWAY_URL=${gatewayUrl}`,
-            `INTERNAL_API_SECRET=${internalApiSecret}`,
-            `WEBHOOK_URL=${options.webhookUrl}`,
-            `PORT=8080`,
-            `GOMAXPROCS=1`
-        ],
-        Labels: {
-            'whatsapp-gateway-saas.instance-id': String(options.instanceId),
-        },
-        HostConfig: {
-            RestartPolicy: { Name: 'unless-stopped' },
-            Memory: parseMemory(options.memoryLimit), 
-            NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
-        },
-    });
-
-    // 3. Start the container
-    await container.start();
-    console.log(`Container started with ID: ${container.id}`);
-
-    return container.inspect();
-}
-
-export async function stopAndRemoveContainer(instanceId: number) {
-    try {
-        const container = await findContainer(instanceId);
-        if (!container) {
-            console.log(`Container for instance ${instanceId} not found, nothing to do.`);
-            return;
-        }
-
-        console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
-        const containerInstance = docker.getContainer(container.Id);
-        
-        // Stop with a 10-second timeout to allow graceful shutdown
-        await containerInstance.stop({ t: 10 }).catch(err => {
-            // Ignore "container already stopped" or "no such container" errors
-            if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
-        });
-
-        await containerInstance.remove().catch(err => {
-             // Ignore "no such container" errors
-            if (err.statusCode !== 404) throw err;
-        });
-        console.log(`Container for instance ${instanceId} removed successfully.`);
-    } catch (error: any) {
-        if (error.statusCode === 404) {
-             console.log(`Container for instance ${instanceId} not found, nothing to do.`);
-             return;
-        }
-        console.error(`Error stopping/removing container for instance ${instanceId}:`, error);
-        throw error;
-    }
-}
-
-export async function findContainer(instanceId: number): Promise<Dockerode.ContainerInfo | null> {
-    try {
-        const containers = await docker.listContainers({
-            all: true,
-            filters: {
-                label: [`whatsapp-gateway-saas.instance-id=${instanceId}`]
-            }
-        });
-
-        if (containers.length === 0) {
-            return null;
-        }
-        if (containers.length > 1) {
-            console.warn(`Found multiple containers for instance ${instanceId}. Using the first one.`);
-        }
-        return containers[0];
-    } catch (error) {
-        console.error(`Error finding container for instance ${instanceId}:`, error);
-        return null;
-    }
-}
-
-async function pullImage(imageName: string): Promise<void> {
-    console.log(`Ensuring image ${imageName} is available...`);
-    try {
-        const images = await docker.listImages({ filters: { reference: [imageName] } });
-        if (images.length > 0) {
-            console.log(`Image ${imageName} already exists locally.`);
-            return;
-        }
-
-        console.log(`Pulling image ${imageName}...`);
-        const pullStream = await docker.pull(imageName);
-        
-        await new Promise<void>((resolve, reject) => {
-            docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
-        });
-
-        console.log(`Image ${imageName} pulled successfully.`);
-    } catch (error) {
-        console.error(`Failed to pull image ${imageName}:`, error);
-        throw error;
-    }
-}
-
-function parseMemory(memoryStr: string): number {
-    if (!memoryStr) return 0; // default
-    const unit = memoryStr.slice(-1).toLowerCase();
-    const value = parseFloat(memoryStr.slice(0, -1));
-
-    if (isNaN(value)) return 0;
-
-    switch (unit) {
-        case 'g': return value * 1024 * 1024 * 1024;
-        case 'm': return value * 1024 * 1024;
-        case 'k': return value * 1024;
-        default: return parseFloat(memoryStr); // Assume bytes if no unit
-    }
-}
+export const nodeRelations = relations(nodes, ({ many }) => ({
+    instances: many(instances),
+}));
 ````
 
 ## File: gateway/package.json
@@ -1445,14 +1330,220 @@ func main() {
 }
 ````
 
+## File: gateway/src/docker.service.ts
+````typescript
+import Dockerode from 'dockerode';
+import { URL } from 'url';
+
+// A simple representation of a worker node, passed from the API layer.
+export interface WorkerNode {
+    id: number;
+    dockerHost: string;
+    publicHost: string;
+}
+
+function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): Dockerode {
+    if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+        return new Dockerode({ socketPath: node.dockerHost.replace('unix://', '') });
+    }
+    if (node.dockerHost.startsWith('tcp://')) {
+        const parsedUrl = new URL(node.dockerHost);
+        return new Dockerode({ host: parsedUrl.hostname, port: parsedUrl.port });
+    }
+    // Fallback for simple host:port
+    const [host, port] = node.dockerHost.split(':');
+    return new Dockerode({ host, port: parseInt(port, 10) });
+}
+
+function getImageForProvider(provider: string): string {
+    const imageMap: Record<string, string> = {
+        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+        // 'baileys': 'some-other-image:latest',
+    };
+    const image = imageMap[provider];
+    if (!image) {
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+    return image;
+}
+
+interface CreateContainerOptions {
+    instanceId: number;
+    node: WorkerNode;
+    name?: string | null;
+    webhookUrl: string;
+    cpuLimit: string;
+    memoryLimit: string;
+    provider: string;
+}
+
+function sanitizeForContainerName(name: string): string {
+    if (!name) return '';
+    return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
+}
+
+export async function createAndStartContainer(options: CreateContainerOptions) {
+    const docker = getDockerClientForNode(options.node);
+    const saneName = sanitizeForContainerName(options.name || '');
+    const containerName = options.name 
+        ? `wgs-${options.instanceId}-${saneName}`
+        : `wgs-instance-${options.instanceId}`;
+
+    const routerName = `wgs-instance-${options.instanceId}`;
+
+    console.log(`Creating container ${containerName} for instance ${options.instanceId} on node ${options.node.publicHost}`);
+
+    const DOCKER_IMAGE = getImageForProvider(options.provider);
+
+    // 1. Pull the image on the target node
+    await pullImage(DOCKER_IMAGE, options.node);
+
+    const gatewayUrl = process.env.GATEWAY_URL; // Should be reachable from worker nodes
+    const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
+    // 2. Create the container
+    const container = await docker.createContainer({
+        Image: DOCKER_IMAGE,
+        name: containerName,
+        Env: [
+            `INSTANCE_ID=${options.instanceId}`,
+            `GATEWAY_URL=${gatewayUrl}`,
+            `INTERNAL_API_SECRET=${internalApiSecret}`,
+            `WEBHOOK_URL=${options.webhookUrl}`,
+            `PORT=8080`,
+            `GOMAXPROCS=1`
+        ],
+        Labels: {
+            'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+            // Traefik Labels for reverse proxying
+            'traefik.enable': 'true',
+            [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+            [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+            [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+            [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+            // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+            [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+            [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
+        },
+        HostConfig: {
+            RestartPolicy: { Name: 'unless-stopped' },
+            Memory: parseMemory(options.memoryLimit), 
+            NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+            NetworkMode: 'worker-net', // Connect to the shared traefik network
+        },
+    });
+
+    // 3. Start the container
+    await container.start();
+    console.log(`Container started with ID: ${container.id}`);
+
+    return container.inspect();
+}
+
+export async function stopAndRemoveContainer(instanceId: number, node: WorkerNode) {
+    const docker = getDockerClientForNode(node);
+    try {
+        const container = await findContainer(instanceId, node);
+        if (!container) {
+            console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+            return;
+        }
+
+        console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
+        const containerInstance = docker.getContainer(container.Id);
+        
+        // Stop with a 10-second timeout to allow graceful shutdown
+        await containerInstance.stop({ t: 10 }).catch(err => {
+            // Ignore "container already stopped" or "no such container" errors
+            if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+        });
+
+        await containerInstance.remove().catch(err => {
+             // Ignore "no such container" errors
+            if (err.statusCode !== 404) throw err;
+        });
+        console.log(`Container for instance ${instanceId} removed successfully.`);
+    } catch (error: any) {
+        if (error.statusCode === 404) {
+             console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+             return;
+        }
+        console.error(`Error stopping/removing container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+        throw error;
+    }
+}
+
+export async function findContainer(instanceId: number, node: WorkerNode): Promise<Dockerode.ContainerInfo | null> {
+    const docker = getDockerClientForNode(node);
+    try {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: {
+                label: [`whatsapp-gateway-saas.instance-id=${instanceId}`]
+            }
+        });
+
+        if (containers.length === 0) {
+            return null;
+        }
+        if (containers.length > 1) {
+            console.warn(`Found multiple containers for instance ${instanceId} on node ${node.dockerHost}. Using the first one.`);
+        }
+        return containers[0];
+    } catch (error) {
+        console.error(`Error finding container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+        return null;
+    }
+}
+
+async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
+    const docker = getDockerClientForNode(node);
+    console.log(`Ensuring image ${imageName} is available on node ${node.dockerHost}...`);
+    try {
+        const images = await docker.listImages({ filters: { reference: [imageName] } });
+        if (images.length > 0) {
+            console.log(`Image ${imageName} already exists on node.`);
+            return;
+        }
+
+        console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
+        const pullStream = await docker.pull(imageName);
+        
+        await new Promise<void>((resolve, reject) => {
+            docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
+        });
+
+        console.log(`Image ${imageName} pulled successfully on node.`);
+    } catch (error) {
+        console.error(`Failed to pull image ${imageName} on node ${node.dockerHost}:`, error);
+        throw error;
+    }
+}
+
+function parseMemory(memoryStr: string): number {
+    if (!memoryStr) return 0; // default
+    const unit = memoryStr.slice(-1).toLowerCase();
+    const value = parseFloat(memoryStr.slice(0, -1));
+
+    if (isNaN(value)) return 0;
+
+    switch (unit) {
+        case 'g': return value * 1024 * 1024 * 1024;
+        case 'm': return value * 1024 * 1024;
+        case 'k': return value * 1024;
+        default: return parseFloat(memoryStr); // Assume bytes if no unit
+    }
+}
+````
+
 ## File: gateway/src/index.ts
 ````typescript
 import { Elysia, t } from 'elysia';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, not } from 'drizzle-orm';
 import postgres from 'postgres';
 import * as schema from '../../drizzle/schema';
-import { createAndStartContainer, findContainer, stopAndRemoveContainer, docker } from './docker.service';
+import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode } from './docker.service';
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -1462,14 +1553,13 @@ if (!connectionString) {
 const client = postgres(connectionString);
 const db = drizzle(client, { schema });
 
-// A simple proxy to fetch data from a container
-async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
-    const url = `http://${containerIp}:8080${path}`;
+// A simple proxy to fetch data from an instance via its public URL
+async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
     try {
-        const response = await fetch(url, options);
+        const response = await fetch(instanceUrl, options);
         return response;
     } catch (e) {
-        console.error(`Failed to proxy request to ${url}`, e);
+        console.error(`Failed to proxy request to ${instanceUrl}`, e);
         return null;
     }
 }
@@ -1500,8 +1590,17 @@ const app = new Elysia()
         }
     })
     .post('/instances', async ({ body, set, user }) => {
+        // Select a node for the new instance. Simple round-robin or first-available logic.
+        // For now, just pick the first one.
+        const [node] = await db.select().from(schema.nodes).limit(1);
+        if (!node) {
+            set.status = 503;
+            return { error: 'No available worker nodes to schedule instance.' };
+        }
+
         // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
+            nodeId: node.id,
             userId: user!.id, 
             name: body.name,
             phoneNumber: body.phone,
@@ -1520,6 +1619,7 @@ const app = new Elysia()
         try {
             await createAndStartContainer({
                 instanceId: newInstance.id,
+                node: node,
                 name: newInstance.name,
                 webhookUrl: newInstance.webhookUrl || '',
                 cpuLimit: newInstance.cpuLimit || '0.5',
@@ -1559,38 +1659,27 @@ const app = new Elysia()
     .get('/instances/:id/qr', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
 
-        // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        // Ownership check and fetch instance with its node
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const container = await findContainer(instanceId);
-
-        if (!container || container.State !== 'running') {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        
-        const containerInfo = await docker.getContainer(container.Id).inspect();
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
+        if (!instanceData.nodes) {
+            set.status = 500;
+            return { error: 'Instance is not associated with a node.' };
         }
 
-        const qrResponse = await proxyToContainer(ip, '/qr');
+        const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+        const qrResponse = await proxyToInstance(instanceUrl);
         if (!qrResponse) {
             set.status = 503;
             return { error: "Failed to connect to instance container." };
         }
         if (!qrResponse.ok) {
             set.status = qrResponse.status;
-            return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            return qrResponse.body;
         }
         
         // The whatsmeow provider returns a PNG. We need to proxy that correctly.
@@ -1601,29 +1690,19 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const container = await findContainer(instanceId);
-
-        if (!container || container.State !== 'running') {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        const containerInfo = await docker.getContainer(container.Id).inspect();
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
+        if (!instanceData.nodes) {
+            set.status = 500;
+            return { error: 'Instance is not associated with a node.' };
         }
 
-        const sendResponse = await proxyToContainer(ip, '/send', {
+        const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+        const sendResponse = await proxyToInstance(instanceUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -1645,18 +1724,19 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // Ownership check
-        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
+        if (!instanceData.nodes) {
+            // Instance exists but node doesn't. Clean up DB record.
+            await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+            return { message: 'Instance found without a node. Record cleaned up.' };
         }
 
         try {
-            await stopAndRemoveContainer(instanceId);
+            await stopAndRemoveContainer(instanceId, instanceData.nodes);
             await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
             set.status = 204;
         } catch (error) {
@@ -1670,36 +1750,49 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // 1. Ownership check
-        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id)));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances || !instanceData.nodes) {
             set.status = 404;
             return { error: 'Instance not found or you do not have permission to access it' };
         }
         
-        console.log(`Starting migration for instance ${instanceId}`);
+        const instance = instanceData.instances;
+        const currentNode = instanceData.nodes;
+
+        // Find a new node to migrate to
+        const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+        if (!newNode) {
+            set.status = 503;
+            return { error: 'No available node to migrate to.' };
+        }
+
+        console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
 
         try {
             // 2. Set status to 'migrating'
             await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
 
             // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
-            await stopAndRemoveContainer(instanceId);
-            console.log(`Old container for instance ${instanceId} removed.`);
+            await stopAndRemoveContainer(instanceId, currentNode);
+            console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
 
             // 4. Create and start a new container. The provider will fetch the snapshot on startup.
             await createAndStartContainer({
                 instanceId: instance.id,
+                node: newNode,
                 name: instance.name,
                 webhookUrl: instance.webhookUrl || '',
                 cpuLimit: instance.cpuLimit || '0.5',
                 memoryLimit: instance.memoryLimit || '512m',
                 provider: instance.provider,
             });
-            console.log(`New container for instance ${instanceId} started.`);
+            console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
 
             // 5. Set status back to 'running'
-            const [updatedInstance] = await db.update(schema.instances)
-                .set({ status: 'running' })
+            const [updatedInstance] = await db.update(schema.instances).set({
+                status: 'running',
+                nodeId: newNode.id,
+            })
                 .where(eq(schema.instances.id, instanceId))
                 .returning();
             
@@ -1800,28 +1893,18 @@ const app = new Elysia()
             set.status = 404;
             return { error: 'Snapshot not found' };
         }
-        // The value is base64 encoded text, decode it and return as binary
+        // The value is a buffer from the bytea column
         set.headers['Content-Type'] = 'application/octet-stream';
-        return Buffer.from(state.value, 'base64');
+        return state.value;
     })
     .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
         const instanceId = parseInt(params.instanceId, 10);
 
-        // The body is raw bytes, we need to base64 encode it for storing in text field
-        let bodyBuffer: Buffer;
-        if (body instanceof ReadableStream) {
-            bodyBuffer = await new Response(body).arrayBuffer().then(buf => Buffer.from(buf));
-        } else if (Buffer.isBuffer(body)) {
-            bodyBuffer = body;
-        } else if (typeof body === 'string') {
-            bodyBuffer = Buffer.from(body, 'utf-8');
-        } else {
-            bodyBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
-        }
-        const value = bodyBuffer.toString('base64');
+        // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+        const value = Buffer.from(body);
 
         await db.insert(schema.instanceState)
-            .values({ instanceId, key: 'session_snapshot', value })
+            .values({ instanceId: instanceId, key: 'session_snapshot', value })
             .onConflictDoUpdate({
                 target: [schema.instanceState.instanceId, schema.instanceState.key],
                 set: { value: value }
@@ -1829,9 +1912,7 @@ const app = new Elysia()
 
         set.status = 204;
     }, {
-        // Allow any content type as we are reading the raw body
-        type: 'none',
-        body: t.Any(),
+        type: 'arrayBuffer', // Elysia will parse the body as ArrayBuffer
     })
   )
   .listen(3000);

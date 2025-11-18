@@ -1,0 +1,229 @@
+plan:
+  id: "refactor-distributed-vps-architecture"
+  status: "todo"
+  title: "Re-architect for True Multi-VPS Distributed Deployment"
+  introduction: |
+    The request to support spawning containers across different VPS locations requires a fundamental architectural shift from a single-host application to a distributed control plane. The current implementation, which relies on a local Docker socket and a shared private network, cannot meet this requirement.
+
+    This plan will re-architect the system to meet this goal. We will transform the Gateway into a multi-node orchestrator capable of managing Docker daemons on remote VPSs. Communication will be routed securely over the public internet via a reverse proxy on each worker node, eliminating the need for a shared private network. State management will be updated to track instance locations, making the system truly location-aware and scalable.
+  parts:
+    - id: "multi-node-orchestration"
+      status: "todo"
+      isolation: false
+      agent_id: "orchestrator-swarm"
+      name: "Part 1: Implement Multi-Node Orchestration in the Gateway"
+      reason: |
+        The Gateway must evolve from controlling a local Docker daemon to managing a pool of remote worker nodes. This requires database schema changes to track nodes and a complete refactor of the `docker.service.ts` to handle remote Docker API communication.
+      steps:
+        - id: "orch-db-schema"
+          status: "todo"
+          name: "1. Update DB schema for node and instance location tracking"
+          reason: |
+            We need to model the worker VPS nodes in the database and associate each instance with the node it's running on.
+          files:
+            - "drizzle/schema.ts"
+          operations:
+            - "Create a new table `nodes` with columns: `id` (serial), `name` (varchar), `docker_host` (text, e.g., 'tcp://1.2.3.4:2376'), `tls_cert_path` (text, for client certs), and `public_host` (text, e.g. 'vps1.example.com')."
+            - "Add a `nodeId` (integer, foreign key to `nodes.id`) column to the `instances` table. Make it nullable initially for migration purposes, but it should be required for new instances."
+        - id: "orch-docker-service"
+          status: "todo"
+          name: "2. Refactor Docker service to be a remote-capable Node Manager"
+          reason: |
+            The `docker.service.ts` must be able to connect to any registered Docker daemon, not just the local one.
+          files:
+            - "gateway/src/docker.service.ts"
+          operations:
+            - "Create a function `getDockerClient(node: Node)` that takes a node object (with `docker_host` and certs) and returns a correctly configured `Dockerode` instance for that remote host."
+            - "Refactor all functions like `createAndStartContainer`, `findContainer`, etc., to accept a `node` object or `nodeId` as a parameter. They will then use `getDockerClient` to operate on the correct remote host."
+            - "Remove the singleton export `export const docker = new Dockerode()`. All Docker operations must now be contextual to a specific node."
+        - id: "orch-instance-api"
+          status: "todo"
+          name: "3. Update instance creation API to include node placement"
+          reason: |
+            The instance creation process must now decide where to place the new container.
+          files:
+            - "gateway/src/index.ts"
+          operations:
+            - "Modify the `POST /api/instances` endpoint. It must now include logic to select a worker node. (For this step, a simple 'select the first available node' strategy is sufficient)."
+            - "Store the selected `nodeId` when creating the new instance record in the database."
+            - "When calling `createAndStartContainer`, pass the required node information."
+
+      context_files:
+        compact:
+          - "drizzle/schema.ts"
+          - "gateway/src/docker.service.ts"
+          - "gateway/src/index.ts"
+        medium:
+          - "drizzle/schema.ts"
+          - "gateway/src/docker.service.ts"
+          - "gateway/src/index.ts"
+          - "README.md"
+        extended:
+          - "drizzle/schema.ts"
+          - "gateway/src/docker.service.ts"
+          - "gateway/src/index.ts"
+          - "README.md"
+          - "gateway/package.json"
+
+    - id: "distributed-networking"
+      status: "todo"
+      isolation: false
+      depends_on: ["multi-node-orchestration"]
+      agent_id: "network-swarm"
+      name: "Part 2: Implement Secure Ingress with Reverse Proxies"
+      reason: |
+        Directly exposing provider container ports on each VPS is a security and management nightmare. A reverse proxy on each worker node will provide a secure, unified entry point for all containers on that host.
+      steps:
+        - id: "net-worker-compose"
+          status: "todo"
+          name: "1. Create a `docker-compose.worker.yml` for worker nodes"
+          reason: |
+            Each worker VPS needs a standard way to set up its essential services, primarily the reverse proxy.
+          files: []
+          operations:
+            - "Create a new file `docker-compose.worker.yml` at the project root."
+            - "In this file, define a Traefik service. Configure it to listen on ports 80 and 443."
+            - "Configure Traefik to use the Docker provider, allowing it to automatically discover containers on the same host."
+            - "Create a shared Docker network, `worker-net`, for Traefik and provider containers to connect to on that specific worker node."
+        - id: "net-label-containers"
+          status: "todo"
+          name: "2. Update container creation to add Traefik labels"
+          reason: |
+            Provider containers need to be created with specific labels that tell the worker's Traefik instance how to route traffic to them.
+          files:
+            - "gateway/src/docker.service.ts"
+          operations:
+            - "In `createAndStartContainer`, add a `Labels` section to the container configuration."
+            - "Add a label to enable Traefik: `'traefik.enable=true'`."
+            - "Add a routing rule label. The rule should be based on the node's public hostname and a unique path for the instance, e.g., `'traefik.http.routers.wgs-instance-${options.instanceId}.rule=Host(`${node.public_host}`) && PathPrefix(`/instances/${options.instanceId}`)'`."
+            - "Add a service label to tell Traefik which port the container uses: `'traefik.http.services.wgs-instance-${options.instanceId}.loadbalancer.server.port=8080'`."
+            - "Add a middleware label to strip the path prefix: `'traefik.http.middlewares.wgs-instance-${options.instanceId}-stripprefix.stripprefix.prefixes=/instances/${options.instanceId}'`."
+            - "Attach the middleware to the router."
+            - "Ensure the container is attached to the `worker-net` network."
+
+      context_files:
+        compact:
+          - "gateway/src/docker.service.ts"
+          - "providers/whatsmeow/docker-compose.yml"
+        medium:
+          - "gateway/src/docker.service.ts"
+          - "providers/whatsmeow/docker-compose.yml"
+          - "README.md"
+        extended:
+          - "gateway/src/docker.service.ts"
+          - "providers/whatsmeow/docker-compose.yml"
+          - "README.md"
+          - "drizzle/schema.ts"
+
+    - id: "refactor-gateway-proxy"
+      status: "todo"
+      isolation: false
+      depends_on: ["distributed-networking"]
+      agent_id: "proxy-swarm"
+      name: "Part 3: Refactor Gateway Proxy to Use Public Routes"
+      reason: |
+        With the new reverse proxy setup, the Gateway's proxy logic must be updated to target the public-facing URLs of the worker nodes instead of trying to connect to private container IPs.
+      steps:
+        - id: "proxy-logic-update"
+          status: "todo"
+          name: "1. Rework API proxy endpoints (QR, Send, etc.)"
+          reason: |
+            All requests that need to reach a provider container must now go through the public-facing Traefik endpoint.
+          files:
+            - "gateway/src/index.ts"
+          operations:
+            - "In all relevant endpoints (e.g., `/instances/:id/qr`, `/instances/:id/send`), fetch the full instance and its associated node from the database."
+            - "Remove all logic related to inspecting the container for its IP address."
+            - "Construct the target URL using the node's `public_host` and the instance ID, e.g., `https://${node.public_host}/instances/${instanceId}/qr`."
+            - "Update the `proxyToContainer` function (perhaps rename it to `proxyToInstance`) to use this new public URL."
+
+      context_files:
+        compact:
+          - "gateway/src/index.ts"
+        medium:
+          - "gateway/src/index.ts"
+          - "drizzle/schema.ts"
+        extended:
+          - "gateway/src/index.ts"
+          - "drizzle/schema.ts"
+          - "gateway/src/docker.service.ts"
+
+    - id: "db-state-hardening"
+      status: "todo"
+      isolation: false
+      agent_id: "db-swarm"
+      depends_on: ["refactor-gateway-proxy"]
+      name: "Part 4: Harden State Persistence with Binary Data Type"
+      reason: |
+        Storing the binary SQLite database as base64-encoded text is inefficient and risky. In a distributed system where snapshots are sent over the network, using a native binary type (`bytea`) is critical for data integrity and performance. This part is preserved from the previous plan as it remains essential.
+      steps:
+        - id: "db-update-schema"
+          status: "todo"
+          name: "1. Update Drizzle schema to use `bytea` for snapshot value"
+          reason: |
+            The database schema must correctly model binary data.
+          files:
+            - "drizzle/schema.ts"
+          operations:
+            - "In the `instanceState` table, change the `value` column type from `text('value')` to a `bytea` equivalent. In Drizzle, this is typically handled by `customType` or a specific driver import."
+            - "After changing the schema, a new migration must be generated via `bun run db:generate`."
+        - id: "db-update-gateway-logic"
+          status: "todo"
+          name: "2. Update Gateway API to handle raw binary snapshots"
+          reason: |
+            The snapshot endpoints must work with raw `application/octet-stream` data, not base64 strings.
+          files:
+            - "gateway/src/index.ts"
+          operations:
+            - "In `POST /internal/state/:instanceId/snapshot`, remove base64 encoding. Store the raw request body buffer directly into the `bytea` column."
+            - "In `GET /internal/state/:instanceId/snapshot`, remove base64 decoding. The value from the DB is already a buffer. Set `Content-Type` to `application/octet-stream` and return it."
+        - id: "db-update-provider-logic"
+          status: "todo"
+          name: "3. Update Whatsmeow provider to send/receive raw binary"
+          reason: |
+            The Go provider must transfer the raw SQLite database file without encoding.
+          files:
+            - "providers/whatsmeow/main.go"
+          operations:
+            - "In `uploadStateSnapshot`, send the database file as the raw request body with `Content-Type: application/octet-stream`."
+            - "In `fetchStateSnapshot`, write the raw response body directly to the database file."
+
+      context_files:
+        compact:
+          - "drizzle/schema.ts"
+          - "gateway/src/index.ts"
+          - "providers/whatsmeow/main.go"
+        medium:
+          - "drizzle/schema.ts"
+          - "gateway/src/index.ts"
+          - "providers/whatsmeow/main.go"
+        extended:
+          - "drizzle/schema.ts"
+          - "gateway/src/index.ts"
+          - "providers/whatsmeow/main.go"
+          - "README.md"
+
+  conclusion: |
+    Upon completion, this refactor will have successfully transformed the application into a true distributed system, capable of managing and orchestrating containers across multiple, geographically separate VPSs. The architecture will be scalable, more secure due to the reverse proxy ingress, and robust. This provides the necessary foundation to fulfill the SaaS vision outlined in the README, enabling features like node auto-scaling, high availability, and global load distribution.
+  context_files:
+    compact:
+      - "gateway/src/docker.service.ts"
+      - "gateway/src/index.ts"
+      - "drizzle/schema.ts"
+      - "README.md"
+    medium:
+      - "gateway/src/docker.service.ts"
+      - "gateway/src/index.ts"
+      - "drizzle/schema.ts"
+      - "README.md"
+      - "providers/whatsmeow/main.go"
+      - "providers/whatsmeow/docker-compose.yml"
+    extended:
+      - "gateway/src/docker.service.ts"
+      - "gateway/src/index.ts"
+      - "drizzle/schema.ts"
+      - "README.md"
+      - "providers/whatsmeow/main.go"
+      - "providers/whatsmeow/docker-compose.yml"
+      - "package.json"
+      - ".env.example"
