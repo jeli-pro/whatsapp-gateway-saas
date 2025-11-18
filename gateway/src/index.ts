@@ -53,7 +53,7 @@ const app = new Elysia()
     .post('/instances', async ({ body, set, user }) => {
         // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
-            userId: user.id, 
+            userId: user!.id, 
             name: body.name,
             phoneNumber: body.phone,
             provider: body.provider,
@@ -116,7 +116,7 @@ const app = new Elysia()
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user.id) {
+        if (instance.userId !== user!.id) {
             set.status = 403;
             return { error: 'Forbidden' };
         }
@@ -157,7 +157,7 @@ const app = new Elysia()
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user.id) {
+        if (instance.userId !== user!.id) {
             set.status = 403;
             return { error: 'Forbidden' };
         }
@@ -201,7 +201,7 @@ const app = new Elysia()
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user.id) {
+        if (instance.userId !== user!.id) {
             set.status = 403;
             return { error: 'Forbidden' };
         }
@@ -221,7 +221,7 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // 1. Ownership check
-        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user.id)));
+        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id)));
         if (!instance) {
             set.status = 404;
             return { error: 'Instance not found or you do not have permission to access it' };

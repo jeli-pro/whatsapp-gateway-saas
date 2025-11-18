@@ -6,6 +6,7 @@ gateway/
   src/
     docker.service.ts
     index.ts
+  .eslintrc.cjs
   package.json
   tsconfig.json
 providers/
@@ -20,9 +21,50 @@ providers/
 drizzle.config.ts
 package.json
 README.md
+tsconfig.json
 ```
 
 # Files
+
+## File: gateway/.eslintrc.cjs
+````
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  root: true,
+  parser: '@typescript-eslint/parser',
+  plugins: [
+    '@typescript-eslint',
+  ],
+  extends: [
+    'eslint:recommended',
+    'plugin:@typescript-eslint/recommended',
+  ],
+  env: {
+    node: true,
+    es2021: true,
+  },
+  parserOptions: {
+    ecmaVersion: 'latest',
+    sourceType: 'module',
+    project: './tsconfig.json',
+  },
+  rules: {
+    '@typescript-eslint/no-explicit-any': 'off',
+    '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
+  },
+  ignorePatterns: ['.eslintrc.cjs', 'node_modules', 'dist'],
+};
+````
+
+## File: tsconfig.json
+````json
+{
+  "files": [],
+  "references": [
+    { "path": "gateway" }
+  ]
+}
+````
 
 ## File: gateway/tsconfig.json
 ````json
@@ -308,95 +350,8 @@ export default defineConfig({
   },
   "devDependencies": {
     "drizzle-kit": "latest",
-    "dotenv": "latest"
-  }
-}
-````
-
-## File: drizzle/schema.ts
-````typescript
-import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
-
-export const users = pgTable('users', {
-  id: serial('id').primaryKey(),
-  email: varchar('email', { length: 256 }).notNull().unique(),
-  apiKey: text('api_key').notNull().unique(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
-
-export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys', 'wawebjs', 'waba']);
-export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error', 'migrating']);
-
-export const instances = pgTable('instances', {
-    id: serial('id').primaryKey(),
-    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-    name: varchar('name', { length: 256 }),
-    phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
-    provider: providerEnum('provider').notNull(),
-    webhookUrl: text('webhook_url'),
-    status: instanceStatusEnum('status').default('creating').notNull(),
-    cpuLimit: varchar('cpu_limit', { length: 10 }).default('0.5'), // e.g., "0.5"
-    memoryLimit: varchar('memory_limit', { length: 10 }).default('512m'), // e.g., "512m"
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-  }, (table) => {
-    return {
-      userPhoneIdx: uniqueIndex('user_phone_idx').on(table.userId, table.phoneNumber),
-    };
-});
-
-export const instanceState = pgTable('instance_state', {
-    id: serial('id').primaryKey(),
-    instanceId: integer('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
-    key: varchar('key', { length: 255 }).notNull(),
-    value: text('value').notNull(),
-}, (table) => {
-    return {
-        instanceKeyIdx: unique('instance_key_idx').on(table.instanceId, table.key),
-    };
-});
-
-export const userRelations = relations(users, ({ many }) => ({
-  instances: many(instances),
-}));
-
-export const instanceRelations = relations(instances, ({ one, many }) => ({
-  user: one(users, {
-    fields: [instances.userId],
-    references: [users.id],
-  }),
-  state: many(instanceState),
-}));
-
-export const instanceStateRelations = relations(instanceState, ({ one }) => ({
-    instance: one(instances, {
-        fields: [instanceState.instanceId],
-        references: [instances.id],
-    }),
-}));
-````
-
-## File: gateway/package.json
-````json
-{
-  "name": "gateway",
-  "module": "src/index.ts",
-  "type": "module",
-  "scripts": {
-    "dev": "bun --watch src/index.ts"
-  },
-  "devDependencies": {
-    "bun-types": "latest",
-    "@types/dockerode": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "elysia": "latest",
-    "drizzle-orm": "latest",
-    "postgres": "latest",
-    "dockerode": "latest"
+    "dotenv": "latest",
+    "typescript": "latest"
   }
 }
 ````
@@ -753,6 +708,114 @@ This is not an official WhatsApp product. Use it for legitimate purposes only. S
 
 - Discord: [https://discord.gg/your-server](https://discord.gg/your-server)
 - Issues via GitHub.
+````
+
+## File: drizzle/schema.ts
+````typescript
+import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  email: varchar('email', { length: 256 }).notNull().unique(),
+  apiKey: text('api_key').notNull().unique(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys', 'wawebjs', 'waba']);
+export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error', 'migrating']);
+
+export const instances = pgTable('instances', {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 256 }),
+    phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
+    provider: providerEnum('provider').notNull(),
+    webhookUrl: text('webhook_url'),
+    status: instanceStatusEnum('status').default('creating').notNull(),
+    cpuLimit: varchar('cpu_limit', { length: 10 }).default('0.5'), // e.g., "0.5"
+    memoryLimit: varchar('memory_limit', { length: 10 }).default('512m'), // e.g., "512m"
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  }, (table) => {
+    return {
+      userPhoneIdx: uniqueIndex('user_phone_idx').on(table.userId, table.phoneNumber),
+    };
+});
+
+export const instanceState = pgTable('instance_state', {
+    id: serial('id').primaryKey(),
+    instanceId: integer('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
+    key: varchar('key', { length: 255 }).notNull(),
+    value: text('value').notNull(),
+}, (table) => {
+    return {
+        instanceKeyIdx: unique('instance_key_idx').on(table.instanceId, table.key),
+    };
+});
+
+export const userRelations = relations(users, ({ many }) => ({
+  instances: many(instances),
+}));
+
+export const instanceRelations = relations(instances, ({ one, many }) => ({
+  user: one(users, {
+    fields: [instances.userId],
+    references: [users.id],
+  }),
+  state: many(instanceState),
+}));
+
+export const instanceStateRelations = relations(instanceState, ({ one }) => ({
+    instance: one(instances, {
+        fields: [instanceState.instanceId],
+        references: [instances.id],
+    }),
+}));
+````
+
+## File: gateway/package.json
+````json
+{
+  "name": "gateway",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "@types/dockerode": "latest",
+    "@typescript-eslint/eslint-plugin": "latest",
+    "@typescript-eslint/parser": "latest",
+    "bun-types": "latest",
+    "eslint": "latest",
+    "typescript": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "drizzle-orm": "latest",
+    "postgres": "latest",
+    "dockerode": "latest"
+  }
+}
+````
+
+## File: providers/whatsmeow/go.mod
+````
+module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow
+
+go 1.23
+
+require (
+	github.com/mattn/go-sqlite3 v1.14.22
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	go.mau.fi/whatsmeow v0.0.0-20251116104239-3aca43070cd4
+	google.golang.org/protobuf v1.35.2
+)
 ````
 
 ## File: gateway/src/docker.service.ts
@@ -1319,20 +1382,6 @@ const app = new Elysia()
 console.log(
   `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
 );
-````
-
-## File: providers/whatsmeow/go.mod
-````
-module github.com/your-org/whatsapp-gateway-saas/providers/whatsmeow
-
-go 1.23
-
-require (
-	github.com/mattn/go-sqlite3 v1.14.22
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	go.mau.fi/whatsmeow v0.0.0-20251116104239-3aca43070cd4
-	google.golang.org/protobuf v1.35.2
-)
 ````
 
 ## File: providers/whatsmeow/Dockerfile

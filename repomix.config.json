@@ -34,7 +34,8 @@
       ".nocaflow",
       "repomix.config.json",
       "relay.config.json",
-      "user.prompt.md"
+      "user.prompt.md",
+      "gateway/tsconfig.tsbuildinfo"
     ]
   },
   "security": {

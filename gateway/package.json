@@ -3,11 +3,17 @@
   "module": "src/index.ts",
   "type": "module",
   "scripts": {
-    "dev": "bun --watch src/index.ts"
+    "dev": "bun --watch src/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -b"
   },
   "devDependencies": {
+    "@types/dockerode": "latest",
+    "@typescript-eslint/eslint-plugin": "latest",
+    "@typescript-eslint/parser": "latest",
     "bun-types": "latest",
-    "@types/dockerode": "latest"
+    "eslint": "latest",
+    "typescript": "latest"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

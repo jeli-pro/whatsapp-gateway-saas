@@ -18,5 +18,9 @@
     "types": [
       "bun-types"
     ]
-  }
+  },
+  "include": [
+    "src",
+    "../drizzle/schema.ts"
+  ]
 }

@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "drizzle-kit": "latest",
-    "dotenv": "latest"
+    "dotenv": "latest",
+    "typescript": "latest"
   }
 }
