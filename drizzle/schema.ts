@@ -9,11 +9,12 @@ export const users = pgTable('users', {
 });
 
 export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys', 'wawebjs', 'waba']);
-export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error']);
+export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error', 'migrating']);
 
 export const instances = pgTable('instances', {
     id: serial('id').primaryKey(),
     userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 256 }),
     phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
     provider: providerEnum('provider').notNull(),
     webhookUrl: text('webhook_url'),

@@ -20,35 +20,9 @@ providers/
 drizzle.config.ts
 package.json
 README.md
-user.prompt.md
 ```
 
 # Files
-
-## File: gateway/package.json
-````json
-{
-  "name": "gateway",
-  "module": "src/index.ts",
-  "type": "module",
-  "scripts": {
-    "dev": "bun --watch src/index.ts"
-  },
-  "devDependencies": {
-    "bun-types": "latest",
-    "@types/dockerode": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "elysia": "latest",
-    "drizzle-orm": "latest",
-    "postgres": "latest",
-    "dockerode": "latest"
-  }
-}
-````
 
 ## File: gateway/tsconfig.json
 ````json
@@ -352,11 +326,12 @@ export const users = pgTable('users', {
 });
 
 export const providerEnum = pgEnum('provider', ['whatsmeow', 'baileys', 'wawebjs', 'waba']);
-export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error']);
+export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'running', 'stopped', 'error', 'migrating']);
 
 export const instances = pgTable('instances', {
     id: serial('id').primaryKey(),
     userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 256 }),
     phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
     provider: providerEnum('provider').notNull(),
     webhookUrl: text('webhook_url'),
@@ -401,464 +376,29 @@ export const instanceStateRelations = relations(instanceState, ({ one }) => ({
 }));
 ````
 
-## File: gateway/src/docker.service.ts
-````typescript
-import Docker from 'dockerode';
-
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
- 
-function getImageForProvider(provider: string): string {
-    // In a real scenario, this could come from a config file or database
-    const imageMap: Record<string, string> = {
-        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
-        // 'baileys': 'some-other-image:latest',
-    };
-    const image = imageMap[provider];
-    if (!image) {
-        throw new Error(`Unsupported provider: ${provider}`);
-    }
-    return image;
+## File: gateway/package.json
+````json
+{
+  "name": "gateway",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/dockerode": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "drizzle-orm": "latest",
+    "postgres": "latest",
+    "dockerode": "latest"
+  }
 }
-
-interface CreateContainerOptions {
-    instanceId: number;
-    webhookUrl: string;
-    cpuLimit: string;
-    memoryLimit: string;
-    provider: string;
-}
-
-export async function createAndStartContainer(options: CreateContainerOptions) {
-    const containerName = `instance-${options.instanceId}`;
-    console.log(`Creating container ${containerName}`);
-
-    const DOCKER_IMAGE = getImageForProvider(options.provider);
-    // First, try to pull the image to ensure it's up to date
-    await pullImage(DOCKER_IMAGE);
-
-    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
-    const internalApiSecret = process.env.INTERNAL_API_SECRET;
-
-    const container = await docker.createContainer({
-        Image: DOCKER_IMAGE,
-        name: containerName,
-        Env: [
-            `INSTANCE_ID=${options.instanceId}`,
-            `GATEWAY_URL=${gatewayUrl}`,
-            `INTERNAL_API_SECRET=${internalApiSecret}`,
-            `WEBHOOK_URL=${options.webhookUrl}`
-        ],
-        HostConfig: {
-            // Restart unless manually stopped
-            RestartPolicy: {
-                Name: 'unless-stopped',
-            },
-            // Resource limits
-            NanoCpus: Math.floor(parseFloat(options.cpuLimit) * 1e9), // e.g. 0.5 -> 500000000
-            Memory: parseMemory(options.memoryLimit), // e.g. "512m" -> 536870912
-        },
-        Labels: {
-            'whatsapp-gateway-saas.instance-id': String(options.instanceId),
-        }
-    });
-
-    console.log(`Starting container ${container.id}`);
-    await container.start();
-
-    return container;
-}
-
-export async function stopAndRemoveContainer(instanceId: number) {
-    const containerName = `instance-${instanceId}`;
-    try {
-        const container = docker.getContainer(containerName);
-        const inspect = await container.inspect();
-        if (inspect.State.Running) {
-            console.log(`Stopping container ${containerName}`);
-            await container.stop();
-        }
-        console.log(`Removing container ${containerName}`);
-        await container.remove();
-        return true;
-    } catch (error: any) {
-        if (error.statusCode === 404) {
-            console.log(`Container ${containerName} not found, nothing to do.`);
-            return true;
-        }
-        console.error(`Error stopping/removing container ${containerName}:`, error);
-        throw error;
-    }
-}
-
-export async function findContainer(instanceId: number) {
-    try {
-        const container = docker.getContainer(`instance-${instanceId}`);
-        return await container.inspect();
-    } catch (error: any) {
-        if (error.statusCode === 404) {
-            return null;
-        }
-        throw error;
-    }
-}
-
-function pullImage(imageName: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-        console.log(`Pulling image ${imageName}...`);
-        docker.pull(imageName, (err: Error, stream: NodeJS.ReadableStream) => {
-            if (err) {
-                return reject(err);
-            }
-            docker.modem.followProgress(stream, onFinished, onProgress);
-
-            function onFinished(err: Error | null, output: any) {
-                if (err) {
-                    return reject(err);
-                }
-                console.log(`Image ${imageName} pulled successfully.`);
-                resolve();
-            }
-            function onProgress(event: any) {
-                // You can add progress reporting here if needed
-            }
-        });
-    });
-}
-
-function parseMemory(mem: string): number {
-    const unit = mem.charAt(mem.length - 1).toLowerCase();
-    const value = parseInt(mem.slice(0, -1), 10);
-    switch (unit) {
-        case 'g': return value * 1024 * 1024 * 1024;
-        case 'm': return value * 1024 * 1024;
-        case 'k': return value * 1024;
-        default: return parseInt(mem, 10);
-    }
-}
-````
-
-## File: gateway/src/index.ts
-````typescript
-import { Elysia, t } from 'elysia';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq, and } from 'drizzle-orm';
-import postgres from 'postgres';
-import * as schema from '../../drizzle/schema';
-import { createAndStartContainer, findContainer, stopAndRemoveContainer } from './docker.service';
-
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set");
-}
-
-const client = postgres(connectionString);
-const db = drizzle(client, { schema });
-
-// A simple proxy to fetch data from a container
-async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
-    const url = `http://${containerIp}:8080${path}`;
-    try {
-        const response = await fetch(url, options);
-        return response;
-    } catch (e) {
-        console.error(`Failed to proxy request to ${url}`, e);
-        return null;
-    }
-}
-
-
-const app = new Elysia()
-  .get('/', () => ({ status: 'ok' }))
-  .group('/api', (app) => app
-    // Resolve user from API Key
-    .resolve(async ({ headers }) => {
-        const auth = headers['authorization'];
-        if (!auth || !auth.startsWith('Bearer ')) {
-            return { user: null };
-        }
-        const apiKey = auth.substring(7);
-        if (!apiKey) {
-            return { user: null };
-        }
-        const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
-        
-        return { user: user || null };
-    })
-    // Simple bearer token auth
-    .onBeforeHandle(({ user, set }) => {
-        if (!user) {
-            set.status = 401;
-            return { error: 'Unauthorized' };
-        }
-    })
-    .post('/instances', async ({ body, set, user }) => {
-        // user is guaranteed to be non-null by the onBeforeHandle guard.
-        const [newInstance] = await db.insert(schema.instances).values({
-            userId: user.id, 
-            phoneNumber: body.phone,
-            provider: body.provider,
-            webhookUrl: body.webhook,
-            cpuLimit: body.resources?.cpu,
-            memoryLimit: body.resources?.memory,
-            status: 'creating',
-        }).returning();
-
-        if (!newInstance) {
-            set.status = 500;
-            return { error: 'Failed to create instance in database' };
-        }
-
-        try {
-            await createAndStartContainer({
-                instanceId: newInstance.id,
-                webhookUrl: newInstance.webhookUrl || '',
-                cpuLimit: newInstance.cpuLimit || '0.5',
-                memoryLimit: newInstance.memoryLimit || '512m',
-                provider: newInstance.provider,
-            });
-            const [updatedInstance] = await db.update(schema.instances)
-                .set({ status: 'running' })
-                .where(eq(schema.instances.id, newInstance.id))
-                .returning();
-            return updatedInstance;
-        } catch (error) {
-            console.error('Failed to start container:', error);
-            await db.update(schema.instances)
-                .set({ status: 'error' })
-                .where(eq(schema.instances.id, newInstance.id));
-            set.status = 500;
-            return { error: 'Failed to start container for instance' };
-        }
-    }, {
-        body: t.Object({
-            phone: t.String(),
-            provider: t.Enum(schema.providerEnum),
-            webhook: t.Optional(t.String()),
-            resources: t.Optional(t.Object({
-                cpu: t.String(),
-                memory: t.String(),
-            }))
-        })
-    })
-    .get('/instances/:id/qr', async ({ params, set, user }) => {
-        const instanceId = parseInt(params.id, 10);
-
-        // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
-            set.status = 404;
-            return { error: 'Instance not found' };
-        }
-        if (instance.userId !== user.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const containerInfo = await findContainer(instanceId);
-
-        if (!containerInfo || !containerInfo.State.Running) {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
-        }
-
-        const qrResponse = await proxyToContainer(ip, '/qr');
-        if (!qrResponse) {
-            set.status = 503;
-            return { error: "Failed to connect to instance container." };
-        }
-        if (!qrResponse.ok) {
-            set.status = qrResponse.status;
-            return { error: `Instance returned an error: ${qrResponse.statusText}`};
-        }
-        
-        return { qr: await qrResponse.text() };
-    })
-    .post('/instances/:id/send', async ({ params, body, set, user }) => {
-        const instanceId = parseInt(params.id, 10);
-
-        // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
-            set.status = 404;
-            return { error: 'Instance not found' };
-        }
-        if (instance.userId !== user.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const containerInfo = await findContainer(instanceId);
-
-        if (!containerInfo || !containerInfo.State.Running) {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
-        }
-
-        const sendResponse = await proxyToContainer(ip, '/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-
-        if (!sendResponse) {
-            set.status = 503;
-            return { error: "Failed to connect to instance container." };
-        }
-        set.status = sendResponse.status;
-        return await sendResponse.json();
-    }, {
-        body: t.Object({
-            to: t.String(),
-            text: t.String(),
-        })
-    })
-    .delete('/instances/:id', async ({ params, set, user }) => {
-        const instanceId = parseInt(params.id, 10);
-
-        // Ownership check
-        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
-            set.status = 404;
-            return { error: 'Instance not found' };
-        }
-        if (instance.userId !== user.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-
-        try {
-            await stopAndRemoveContainer(instanceId);
-            await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
-            set.status = 204;
-        } catch (error) {
-            console.error('Failed to delete instance:', error);
-            set.status = 500;
-            return { error: 'Failed to delete instance' };
-        }
-    })
-  )
-  // New internal API group for state management
-  .group('/internal', (app) => app
-    .onBeforeHandle(({ headers, set }) => {
-        const internalSecret = process.env.INTERNAL_API_SECRET;
-        if (!internalSecret) {
-            console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
-            set.status = 503;
-            return { error: 'Service Unavailable' };
-        }
-        if (headers['x-internal-secret'] !== internalSecret) {
-            set.status = 401;
-            return { error: 'Unauthorized' };
-        }
-    })
-    .get('/state/:instanceId', async ({ params }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        const states = await db.select({
-            key: schema.instanceState.key,
-            value: schema.instanceState.value
-        }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
-        
-        return states;
-    })
-    .get('/state/:instanceId/:key', async ({ params, set }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        const [state] = await db.select({
-            value: schema.instanceState.value
-        }).from(schema.instanceState).where(and(
-            eq(schema.instanceState.instanceId, instanceId),
-            eq(schema.instanceState.key, params.key)
-        ));
-
-        if (!state) {
-            set.status = 404;
-            return { error: 'State key not found' };
-        }
-        return state.value; // Return raw value
-    })
-    .post('/state/:instanceId', async ({ params, body, set }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        const { key, value } = body;
-        
-        await db.insert(schema.instanceState)
-            .values({ instanceId, key, value })
-            .onConflictDoUpdate({
-                target: [schema.instanceState.instanceId, schema.instanceState.key],
-                set: { value: value }
-            });
-        
-        set.status = 204;
-    }, {
-        body: t.Object({
-            key: t.String(),
-            value: t.String(),
-        })
-    })
-    .delete('/state/:instanceId/:key', async ({ params, set }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        const result = await db.delete(schema.instanceState).where(and(
-            eq(schema.instanceState.instanceId, instanceId),
-            eq(schema.instanceState.key, params.key)
-        )).returning();
-
-        if (result.length === 0) {
-            set.status = 404;
-            return { error: 'State key not found' };
-        }
-        
-        set.status = 204;
-    })
-    .get('/state/:instanceId/snapshot', async ({ params, set }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        const [state] = await db.select({
-            value: schema.instanceState.value
-        }).from(schema.instanceState).where(and(
-            eq(schema.instanceState.instanceId, instanceId),
-            eq(schema.instanceState.key, 'session_snapshot')
-        ));
-
-        if (!state || !state.value) {
-            set.status = 404;
-            return { error: 'Snapshot not found' };
-        }
-        // The value is base64 encoded text, decode it and return as binary
-        set.headers['Content-Type'] = 'application/octet-stream';
-        return Buffer.from(state.value, 'base64');
-    })
-    .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
-        const instanceId = parseInt(params.instanceId, 10);
-        
-        // The body is raw bytes, we need to base64 encode it for storing in text field
-        const bodyBuffer = await Bun.readableStreamToBuffer(body as ReadableStream);
-        const value = bodyBuffer.toString('base64');
-
-        await db.insert(schema.instanceState)
-            .values({ instanceId, key: 'session_snapshot', value })
-            .onConflictDoUpdate({
-                target: [schema.instanceState.instanceId, schema.instanceState.key],
-                set: { value: value }
-            });
-        
-        set.status = 204;
-    }, {
-        // Allow any content type as we are reading the raw body
-        type: 'none',
-        body: t.Any(),
-    })
-  )
-  .listen(3000);
-
-console.log(
-  `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
-);
 ````
 
 ## File: providers/whatsmeow/docker-compose.yml
@@ -1213,6 +753,572 @@ This is not an official WhatsApp product. Use it for legitimate purposes only. S
 
 - Discord: [https://discord.gg/your-server](https://discord.gg/your-server)
 - Issues via GitHub.
+````
+
+## File: gateway/src/docker.service.ts
+````typescript
+import Dockerode from 'dockerode';
+
+export const docker = new Dockerode(); // Assumes DOCKER_HOST or default socket path is configured
+
+function getImageForProvider(provider: string): string {
+    const imageMap: Record<string, string> = {
+        'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+        // 'baileys': 'some-other-image:latest',
+    };
+    const image = imageMap[provider];
+    if (!image) {
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+    return image;
+}
+
+interface CreateContainerOptions {
+    instanceId: number;
+    name?: string | null;
+    webhookUrl: string;
+    cpuLimit: string;
+    memoryLimit: string;
+    provider: string;
+}
+
+function sanitizeForContainerName(name: string): string {
+    if (!name) return '';
+    return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
+}
+
+export async function createAndStartContainer(options: CreateContainerOptions) {
+    const saneName = sanitizeForContainerName(options.name || '');
+    const containerName = options.name 
+        ? `wgs-${options.instanceId}-${saneName}`
+        : `wgs-instance-${options.instanceId}`;
+
+    console.log(`Creating container ${containerName} for instance ${options.instanceId}`);
+
+    const DOCKER_IMAGE = getImageForProvider(options.provider);
+
+    // 1. Pull the image
+    await pullImage(DOCKER_IMAGE);
+
+    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
+    const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
+    // 2. Create the container
+    const container = await docker.createContainer({
+        Image: DOCKER_IMAGE,
+        name: containerName,
+        Env: [
+            `INSTANCE_ID=${options.instanceId}`,
+            `GATEWAY_URL=${gatewayUrl}`,
+            `INTERNAL_API_SECRET=${internalApiSecret}`,
+            `WEBHOOK_URL=${options.webhookUrl}`,
+            `PORT=8080`,
+            `GOMAXPROCS=1`
+        ],
+        Labels: {
+            'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+        },
+        HostConfig: {
+            RestartPolicy: { Name: 'unless-stopped' },
+            Memory: parseMemory(options.memoryLimit), 
+            NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+        },
+    });
+
+    // 3. Start the container
+    await container.start();
+    console.log(`Container started with ID: ${container.id}`);
+
+    return container.inspect();
+}
+
+export async function stopAndRemoveContainer(instanceId: number) {
+    try {
+        const container = await findContainer(instanceId);
+        if (!container) {
+            console.log(`Container for instance ${instanceId} not found, nothing to do.`);
+            return;
+        }
+
+        console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
+        const containerInstance = docker.getContainer(container.Id);
+        
+        // Stop with a 10-second timeout to allow graceful shutdown
+        await containerInstance.stop({ t: 10 }).catch(err => {
+            // Ignore "container already stopped" or "no such container" errors
+            if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+        });
+
+        await containerInstance.remove().catch(err => {
+             // Ignore "no such container" errors
+            if (err.statusCode !== 404) throw err;
+        });
+        console.log(`Container for instance ${instanceId} removed successfully.`);
+    } catch (error: any) {
+        if (error.statusCode === 404) {
+             console.log(`Container for instance ${instanceId} not found, nothing to do.`);
+             return;
+        }
+        console.error(`Error stopping/removing container for instance ${instanceId}:`, error);
+        throw error;
+    }
+}
+
+export async function findContainer(instanceId: number): Promise<Dockerode.ContainerInfo | null> {
+    try {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: {
+                label: [`whatsapp-gateway-saas.instance-id=${instanceId}`]
+            }
+        });
+
+        if (containers.length === 0) {
+            return null;
+        }
+        if (containers.length > 1) {
+            console.warn(`Found multiple containers for instance ${instanceId}. Using the first one.`);
+        }
+        return containers[0];
+    } catch (error) {
+        console.error(`Error finding container for instance ${instanceId}:`, error);
+        return null;
+    }
+}
+
+async function pullImage(imageName: string): Promise<void> {
+    console.log(`Ensuring image ${imageName} is available...`);
+    try {
+        const images = await docker.listImages({ filters: { reference: [imageName] } });
+        if (images.length > 0) {
+            console.log(`Image ${imageName} already exists locally.`);
+            return;
+        }
+
+        console.log(`Pulling image ${imageName}...`);
+        const pullStream = await docker.pull(imageName);
+        
+        await new Promise<void>((resolve, reject) => {
+            docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
+        });
+
+        console.log(`Image ${imageName} pulled successfully.`);
+    } catch (error) {
+        console.error(`Failed to pull image ${imageName}:`, error);
+        throw error;
+    }
+}
+
+function parseMemory(memoryStr: string): number {
+    if (!memoryStr) return 0; // default
+    const unit = memoryStr.slice(-1).toLowerCase();
+    const value = parseFloat(memoryStr.slice(0, -1));
+
+    if (isNaN(value)) return 0;
+
+    switch (unit) {
+        case 'g': return value * 1024 * 1024 * 1024;
+        case 'm': return value * 1024 * 1024;
+        case 'k': return value * 1024;
+        default: return parseFloat(memoryStr); // Assume bytes if no unit
+    }
+}
+````
+
+## File: gateway/src/index.ts
+````typescript
+import { Elysia, t } from 'elysia';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { eq, and } from 'drizzle-orm';
+import postgres from 'postgres';
+import * as schema from '../../drizzle/schema';
+import { createAndStartContainer, findContainer, stopAndRemoveContainer, docker } from './docker.service';
+
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error("DATABASE_URL is not set");
+}
+
+const client = postgres(connectionString);
+const db = drizzle(client, { schema });
+
+// A simple proxy to fetch data from a container
+async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
+    const url = `http://${containerIp}:8080${path}`;
+    try {
+        const response = await fetch(url, options);
+        return response;
+    } catch (e) {
+        console.error(`Failed to proxy request to ${url}`, e);
+        return null;
+    }
+}
+
+
+const app = new Elysia()
+  .get('/', () => ({ status: 'ok' }))
+  .group('/api', (app) => app
+    // Resolve user from API Key
+    .resolve(async ({ headers }) => {
+        const auth = headers['authorization'];
+        if (!auth || !auth.startsWith('Bearer ')) {
+            return { user: null };
+        }
+        const apiKey = auth.substring(7);
+        if (!apiKey) {
+            return { user: null };
+        }
+        const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+        
+        return { user: user || null };
+    })
+    // Simple bearer token auth
+    .onBeforeHandle(({ user, set }) => {
+        if (!user) {
+            set.status = 401;
+            return { error: 'Unauthorized' };
+        }
+    })
+    .post('/instances', async ({ body, set, user }) => {
+        // user is guaranteed to be non-null by the onBeforeHandle guard.
+        const [newInstance] = await db.insert(schema.instances).values({
+            userId: user.id, 
+            name: body.name,
+            phoneNumber: body.phone,
+            provider: body.provider,
+            webhookUrl: body.webhook,
+            cpuLimit: body.resources?.cpu,
+            memoryLimit: body.resources?.memory,
+            status: 'creating',
+        }).returning();
+
+        if (!newInstance) {
+            set.status = 500;
+            return { error: 'Failed to create instance in database' };
+        }
+
+        try {
+            await createAndStartContainer({
+                instanceId: newInstance.id,
+                name: newInstance.name,
+                webhookUrl: newInstance.webhookUrl || '',
+                cpuLimit: newInstance.cpuLimit || '0.5',
+                memoryLimit: newInstance.memoryLimit || '512m',
+                provider: newInstance.provider,
+            });
+            const [updatedInstance] = await db.update(schema.instances)
+                .set({ status: 'running' })
+                .where(eq(schema.instances.id, newInstance.id))
+                .returning();
+            return updatedInstance;
+        } catch (error) {
+            console.error('Failed to start container:', error);
+            await db.update(schema.instances)
+                .set({ status: 'error' })
+                .where(eq(schema.instances.id, newInstance.id));
+            set.status = 500;
+            return { error: 'Failed to start container for instance' };
+        }
+    }, {
+        body: t.Object({
+            name: t.Optional(t.String()),
+            phone: t.String(),
+            provider: t.Union([
+                t.Literal('whatsmeow'),
+                t.Literal('baileys'),
+                t.Literal('wawebjs'),
+                t.Literal('waba')
+            ]),
+            webhook: t.Optional(t.String()),
+            resources: t.Optional(t.Object({
+                cpu: t.String(),
+                memory: t.String(),
+            }))
+        })
+    })
+    .get('/instances/:id/qr', async ({ params, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
+        const container = await findContainer(instanceId);
+
+        if (!container || container.State !== 'running') {
+            set.status = 404;
+            return { error: 'Instance container not found or not running' };
+        }
+        
+        const containerInfo = await docker.getContainer(container.Id).inspect();
+        const ip = containerInfo.NetworkSettings.IPAddress;
+        if (!ip) {
+             set.status = 500;
+             return { error: "Could not determine container IP address." };
+        }
+
+        const qrResponse = await proxyToContainer(ip, '/qr');
+        if (!qrResponse) {
+            set.status = 503;
+            return { error: "Failed to connect to instance container." };
+        }
+        if (!qrResponse.ok) {
+            set.status = qrResponse.status;
+            return { error: `Instance returned an error: ${qrResponse.statusText}`};
+        }
+        
+        // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+        set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+        return qrResponse.blob();
+    })
+    .post('/instances/:id/send', async ({ params, body, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
+        const container = await findContainer(instanceId);
+
+        if (!container || container.State !== 'running') {
+            set.status = 404;
+            return { error: 'Instance container not found or not running' };
+        }
+        const containerInfo = await docker.getContainer(container.Id).inspect();
+        const ip = containerInfo.NetworkSettings.IPAddress;
+        if (!ip) {
+             set.status = 500;
+             return { error: "Could not determine container IP address." };
+        }
+
+        const sendResponse = await proxyToContainer(ip, '/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        if (!sendResponse) {
+            set.status = 503;
+            return { error: "Failed to connect to instance container." };
+        }
+        set.status = sendResponse.status;
+        return await sendResponse.json();
+    }, {
+        body: t.Object({
+            to: t.String(),
+            text: t.String(),
+        })
+    })
+    .delete('/instances/:id', async ({ params, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found' };
+        }
+        if (instance.userId !== user.id) {
+            set.status = 403;
+            return { error: 'Forbidden' };
+        }
+
+        try {
+            await stopAndRemoveContainer(instanceId);
+            await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+            set.status = 204;
+        } catch (error) {
+            console.error('Failed to delete instance:', error);
+            set.status = 500;
+            return { error: 'Failed to delete instance' };
+        }
+    })
+    .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+        // The `target_node` from the README is ignored in this single-node implementation.
+        const instanceId = parseInt(params.id, 10);
+
+        // 1. Ownership check
+        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user.id)));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found or you do not have permission to access it' };
+        }
+        
+        console.log(`Starting migration for instance ${instanceId}`);
+
+        try {
+            // 2. Set status to 'migrating'
+            await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+            // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+            await stopAndRemoveContainer(instanceId);
+            console.log(`Old container for instance ${instanceId} removed.`);
+
+            // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+            await createAndStartContainer({
+                instanceId: instance.id,
+                name: instance.name,
+                webhookUrl: instance.webhookUrl || '',
+                cpuLimit: instance.cpuLimit || '0.5',
+                memoryLimit: instance.memoryLimit || '512m',
+                provider: instance.provider,
+            });
+            console.log(`New container for instance ${instanceId} started.`);
+
+            // 5. Set status back to 'running'
+            const [updatedInstance] = await db.update(schema.instances)
+                .set({ status: 'running' })
+                .where(eq(schema.instances.id, instanceId))
+                .returning();
+            
+            console.log(`Migration for instance ${instanceId} completed successfully.`);
+            return { status: 'ok', instance: updatedInstance };
+        } catch (error) {
+            console.error(`Migration failed for instance ${instanceId}:`, error);
+            await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+            set.status = 500;
+            return { error: 'Migration failed' };
+        }
+    }, {
+        body: t.Object({
+            target_node: t.Optional(t.String()),
+        })
+    })
+  )
+  // New internal API group for state management
+  .group('/internal', (app) => app
+    .onBeforeHandle(({ headers, set }) => {
+        const internalSecret = process.env.INTERNAL_API_SECRET;
+        if (!internalSecret) {
+            console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+            set.status = 503;
+            return { error: 'Service Unavailable' };
+        }
+        if (headers['x-internal-secret'] !== internalSecret) {
+            set.status = 401;
+            return { error: 'Unauthorized' };
+        }
+    })
+    .get('/state/:instanceId', async ({ params }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const states = await db.select({
+            key: schema.instanceState.key,
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+        
+        return states;
+    })
+    .get('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        ));
+
+        if (!state) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        return state.value; // Return raw value
+    })
+    .post('/state/:instanceId', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const { key, value } = body;
+        
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key, value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+        
+        set.status = 204;
+    }, {
+        body: t.Object({
+            key: t.String(),
+            value: t.String(),
+        })
+    })
+    .delete('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const result = await db.delete(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, params.key)
+        )).returning();
+
+        if (result.length === 0) {
+            set.status = 404;
+            return { error: 'State key not found' };
+        }
+        
+        set.status = 204;
+    })
+    .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+            value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+            eq(schema.instanceState.instanceId, instanceId),
+            eq(schema.instanceState.key, 'session_snapshot')
+        ));
+
+        if (!state || !state.value) {
+            set.status = 404;
+            return { error: 'Snapshot not found' };
+        }
+        // The value is base64 encoded text, decode it and return as binary
+        set.headers['Content-Type'] = 'application/octet-stream';
+        return Buffer.from(state.value, 'base64');
+    })
+    .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+
+        // The body is raw bytes, we need to base64 encode it for storing in text field
+        let bodyBuffer: Buffer;
+        if (body instanceof ReadableStream) {
+            bodyBuffer = await new Response(body).arrayBuffer().then(buf => Buffer.from(buf));
+        } else if (Buffer.isBuffer(body)) {
+            bodyBuffer = body;
+        } else if (typeof body === 'string') {
+            bodyBuffer = Buffer.from(body, 'utf-8');
+        } else {
+            bodyBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
+        }
+        const value = bodyBuffer.toString('base64');
+
+        await db.insert(schema.instanceState)
+            .values({ instanceId, key: 'session_snapshot', value })
+            .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: value }
+            });
+
+        set.status = 204;
+    }, {
+        // Allow any content type as we are reading the raw body
+        type: 'none',
+        body: t.Any(),
+    })
+  )
+  .listen(3000);
+
+console.log(
+  `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+);
 ````
 
 ## File: providers/whatsmeow/go.mod
@@ -1680,42 +1786,4 @@ func main() {
 	client.Disconnect()
 	waLogger.Infof("Disconnected. Goodbye.")
 }
-````
-
-## File: user.prompt.md
-````markdown
-=== DOING
-
-based on current providers/whatsmeow setup, is it already met readme.md requirements and strategies?
-
-=== DONE
-
-would you push build image to docker hub, already logged in. so that on every run the app prioritize pulling than building. but do not delete building , just last priority
-
-=== DONE
-
-understand readme.md , then clone https://github.com/tulir/whatsmeow.git to providers/whatsmeow/src , then understand the repo to make perfect providers/whatsmeow/Dockerfile and docker compose by iterating until you can access health and status from container.
-
-1. in providers/whatsmeow/ dir should be no any files than Dockerfile and docker-compose.yml
-2. make sure the docker recipes; 
-
- - ✅ No manual intervention needed
- - ✅ Always gets latest version  of repos/ deps automatically, if already latest dont download
- - ✅ No source files alongside Docker files
- - ✅ Works perfectly in CI/CD pipelines
- - ✅ Efficient (only downloads when and what needed)
- - ✅ should always have idempotency mindset
- - ✅ should auto clean on build destroy only by docker recipe.
- - ✅ should be no any automation script than docker recipe.
- 
- 
-3. after everything done, I want to know below for scalability
-
-  - how many seconds needed when there is another new phone number until user can scan qr.
-  - how much ram use for whatsmeow
-  - how much ram use for whatsmeow + its docker daemon
-
-==== DONE
-
-understand readme.md then plan! proritize the whatsmeow provider first
 ````

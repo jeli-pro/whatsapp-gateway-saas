@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { eq, and } from 'drizzle-orm';
 import postgres from 'postgres';
 import * as schema from '../../drizzle/schema';
-import { createAndStartContainer, findContainer, stopAndRemoveContainer } from './docker.service';
+import { createAndStartContainer, findContainer, stopAndRemoveContainer, docker } from './docker.service';
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -54,6 +54,7 @@ const app = new Elysia()
         // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
             userId: user.id, 
+            name: body.name,
             phoneNumber: body.phone,
             provider: body.provider,
             webhookUrl: body.webhook,
@@ -70,6 +71,7 @@ const app = new Elysia()
         try {
             await createAndStartContainer({
                 instanceId: newInstance.id,
+                name: newInstance.name,
                 webhookUrl: newInstance.webhookUrl || '',
                 cpuLimit: newInstance.cpuLimit || '0.5',
                 memoryLimit: newInstance.memoryLimit || '512m',
@@ -90,6 +92,7 @@ const app = new Elysia()
         }
     }, {
         body: t.Object({
+            name: t.Optional(t.String()),
             phone: t.String(),
             provider: t.Union([
                 t.Literal('whatsmeow'),
@@ -117,13 +120,14 @@ const app = new Elysia()
             set.status = 403;
             return { error: 'Forbidden' };
         }
-        const containerInfo = await findContainer(instanceId);
+        const container = await findContainer(instanceId);
 
-        if (!containerInfo || !containerInfo.State.Running) {
+        if (!container || container.State !== 'running') {
             set.status = 404;
             return { error: 'Instance container not found or not running' };
         }
         
+        const containerInfo = await docker.getContainer(container.Id).inspect();
         const ip = containerInfo.NetworkSettings.IPAddress;
         if (!ip) {
              set.status = 500;
@@ -140,7 +144,9 @@ const app = new Elysia()
             return { error: `Instance returned an error: ${qrResponse.statusText}`};
         }
         
-        return { qr: await qrResponse.text() };
+        // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+        set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+        return qrResponse.blob();
     })
     .post('/instances/:id/send', async ({ params, body, set, user }) => {
         const instanceId = parseInt(params.id, 10);
@@ -155,12 +161,13 @@ const app = new Elysia()
             set.status = 403;
             return { error: 'Forbidden' };
         }
-        const containerInfo = await findContainer(instanceId);
+        const container = await findContainer(instanceId);
 
-        if (!containerInfo || !containerInfo.State.Running) {
+        if (!container || container.State !== 'running') {
             set.status = 404;
             return { error: 'Instance container not found or not running' };
         }
+        const containerInfo = await docker.getContainer(container.Id).inspect();
         const ip = containerInfo.NetworkSettings.IPAddress;
         if (!ip) {
              set.status = 500;
@@ -208,6 +215,57 @@ const app = new Elysia()
             set.status = 500;
             return { error: 'Failed to delete instance' };
         }
+    })
+    .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+        // The `target_node` from the README is ignored in this single-node implementation.
+        const instanceId = parseInt(params.id, 10);
+
+        // 1. Ownership check
+        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user.id)));
+        if (!instance) {
+            set.status = 404;
+            return { error: 'Instance not found or you do not have permission to access it' };
+        }
+        
+        console.log(`Starting migration for instance ${instanceId}`);
+
+        try {
+            // 2. Set status to 'migrating'
+            await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+            // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+            await stopAndRemoveContainer(instanceId);
+            console.log(`Old container for instance ${instanceId} removed.`);
+
+            // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+            await createAndStartContainer({
+                instanceId: instance.id,
+                name: instance.name,
+                webhookUrl: instance.webhookUrl || '',
+                cpuLimit: instance.cpuLimit || '0.5',
+                memoryLimit: instance.memoryLimit || '512m',
+                provider: instance.provider,
+            });
+            console.log(`New container for instance ${instanceId} started.`);
+
+            // 5. Set status back to 'running'
+            const [updatedInstance] = await db.update(schema.instances)
+                .set({ status: 'running' })
+                .where(eq(schema.instances.id, instanceId))
+                .returning();
+            
+            console.log(`Migration for instance ${instanceId} completed successfully.`);
+            return { status: 'ok', instance: updatedInstance };
+        } catch (error) {
+            console.error(`Migration failed for instance ${instanceId}:`, error);
+            await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+            set.status = 500;
+            return { error: 'Migration failed' };
+        }
+    }, {
+        body: t.Object({
+            target_node: t.Optional(t.String()),
+        })
     })
   )
   // New internal API group for state management

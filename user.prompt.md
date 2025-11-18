@@ -1,3 +1,7 @@
+===
+
+implement eslint and bun tsc -b works fine
+
 === DOING
 
 based on current providers/whatsmeow setup, is it already met readme.md requirements and strategies?

@@ -15,6 +15,7 @@
   "dependencies": {
     "elysia": "latest",
     "drizzle-orm": "latest",
-    "postgres": "latest"
+    "postgres": "latest",
+    "dockerode": "latest"
   }
 }

@@ -33,7 +33,8 @@
       "docs",
       ".nocaflow",
       "repomix.config.json",
-      "relay.config.json"
+      "relay.config.json",
+      "user.prompt.md"
     ]
   },
   "security": {
