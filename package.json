@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "gateway"
+    "gateway",
+    "drizzle"
   ],
   "scripts": {
     "dev": "bun --cwd gateway run dev",
+    "test": "bun --cwd gateway run test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

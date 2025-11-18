@@ -374,8 +374,11 @@ const app = new Elysia()
         set.status = 204;
     }, { body: t.ArrayBuffer() })
   )
-  .listen(3000);
 
-console.log(
-  `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
-);
+// Start the server only if this file is the main module
+if (import.meta.main) {
+    app.listen(3000);
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+}

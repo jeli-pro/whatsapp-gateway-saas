@@ -140,7 +140,6 @@ plan:
           - 'drizzle/schema.ts'
           - '.env.example'
           - 'README.md'
-
     - id: 'provider-api-store-v1w2'
       status: 'todo'
       isolation: true

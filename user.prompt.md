@@ -1,8 +1,19 @@
-===
+=== DOING
+
+based on readme.md , implement test cases . codebase compliance rules;
+
+1. No OOP, only HOFs
+2. Use bun.sh and e2e type safe TypeScript
+3. No unknown or any type
+4. tests/[e2e|integration|unit]/[domain].test.ts files & dirs
+5. Use `bun test`. Write isolated, idempotent tests. Do not mock internal application logic. real.
+6. DRY
+
+=== DONE
 
 implement eslint and bun tsc -b works fine
 
-=== DOING
+=== DONE
 
 based on current providers/whatsmeow setup, is it already met readme.md requirements and strategies?
 

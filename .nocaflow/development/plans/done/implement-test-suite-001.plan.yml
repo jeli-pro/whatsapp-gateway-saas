@@ -1,0 +1,198 @@
+plan:
+  id: "implement-test-suite-001"
+  status: "todo"
+  title: "Implement a Comprehensive Test Suite"
+  introduction: |
+    This plan outlines the strategy to introduce a robust testing framework into the `whatsapp-gateway-saas` project. The current codebase lacks any form of automated testing, which is a significant risk for future development and refactoring. By implementing a multi-layered testing approach (unit, integration, and end-to-end), we aim to ensure the reliability, correctness, and stability of the entire system.
+
+    The test suite will be built using Bun's native test runner, leveraging its speed and simplicity. We will adhere to a strict set of principles: no mocking of internal application logic, ensuring tests are isolated and idempotent, and maintaining a clean, organized test structure. The E2E tests will be "real," meaning they will interact with a live Docker daemon and a dedicated test database to simulate production conditions as closely as possible. This will validate the entire request lifecycle, from API calls to container orchestration and state persistence.
+  parts:
+    - id: "a1b2c3-setup"
+      status: "todo"
+      isolation: false
+      name: "Part 1: Test Infrastructure and Configuration"
+      reason: |
+        Before any tests can be written, a foundational, reproducible testing environment is required. This part involves setting up all the necessary configurations, dependencies, scripts, and helper utilities to support the entire test suite. A solid foundation prevents flaky tests and simplifies the test-writing process for subsequent parts.
+      steps:
+        - id: "s1-deps"
+          status: "todo"
+          name: "1. Configure Scripts and Dependencies"
+          reason: |
+            To integrate `bun test` into the project, we need to add the test script to `package.json` and install any necessary type definitions for the test environment. This makes running tests a standardized, one-command operation.
+          files:
+            - "package.json"
+            - "gateway/package.json"
+          operations:
+            - 'In the root `package.json`, add a top-level `test` script: `"test": "bun --cwd gateway test"`.'
+            - 'In `gateway/package.json`, add the main `test` script: `"test": "bun test"`.'
+            - "In `gateway/package.json` devDependencies, ensure `bun-types` is present. If not, add it."
+        - id: "s2-structure"
+          status: "todo"
+          name: "2. Create Test Directory Structure and Helpers"
+          reason: |
+            A well-organized directory structure is crucial for maintainability. We will create the top-level `tests` directory inside the `gateway` workspace, with subdirectories for unit, integration, and E2E tests, as per the directive. We will also add a `helpers` directory for reusable test setup/teardown logic.
+          files:
+            - "gateway/tests/helpers/setup.ts"
+            - "gateway/tests/unit/.gitkeep"
+            - "gateway/tests/integration/.gitkeep"
+            - "gateway/tests/e2e/.gitkeep"
+          operations:
+            - "Create a new directory: `gateway/tests`."
+            - "Create subdirectories: `gateway/tests/unit`, `gateway/tests/integration`, `gateway/tests/e2e`, and `gateway/tests/helpers`."
+            - "Create a new file `gateway/tests/helpers/setup.ts` to house test environment setup logic (e.g., starting the API server, managing test DB)."
+        - id: "s3-tsconfig"
+          status: "todo"
+          name: "3. Configure TypeScript for Tests"
+          reason: |
+            The main `tsconfig.json` is configured for production code and excludes test files by default. We need to update it to include the new `tests` directory so that TypeScript can correctly parse and type-check our test files.
+          files:
+            - "gateway/tsconfig.json"
+          operations:
+            - 'In `gateway/tsconfig.json`, update the `include` array to add the `tests` directory: `"include": ["src", "../drizzle/schema.ts", "tests"]`.'
+
+    - id: "d4e5f6-unit"
+      status: "todo"
+      isolation: false
+      agent_id: "agent-unit"
+      depends_on: ["a1b2c3-setup"]
+      name: "Part 2: Unit Tests for Utility Functions"
+      reason: |
+        To validate small, pure, and isolated pieces of logic. These tests are fast, simple, and provide immediate feedback on the correctness of utility functions without the overhead of external services like Docker or a database.
+      steps:
+        - id: "s1-unit-docker"
+          status: "todo"
+          name: "1. Create Unit Tests for Docker Service Utilities"
+          reason: |
+            The `docker.service.ts` file contains several pure functions (`parseMemory`, `sanitizeForContainerName`) that are perfect candidates for unit testing. This ensures their logic is correct across various inputs.
+          files:
+            - "gateway/tests/unit/docker.service.test.ts"
+          operations:
+            - "Create the test file `gateway/tests/unit/docker.service.test.ts`."
+            - "Import `expect`, `test` from `bun:test`."
+            - "Import the functions to be tested from `gateway/src/docker.service.ts`."
+            - "Write test cases for `parseMemory` covering different units (g, m, k) and edge cases (invalid input, no unit)."
+            - "Write test cases for `sanitizeForContainerName` covering special characters, spaces, and empty inputs."
+      context_files:
+        compact:
+          - "gateway/src/docker.service.ts"
+        medium:
+          - "gateway/src/docker.service.ts"
+        extended:
+          - "gateway/src/docker.service.ts"
+
+    - id: "g7h8i9-e2e"
+      status: "todo"
+      isolation: false
+      agent_id: "agent-e2e"
+      depends_on: ["a1b2c3-setup"]
+      name: "Part 3: End-to-End Tests for Instance Management API"
+      reason: |
+        This is the most critical part, validating the primary user-facing workflow. These tests will confirm that a user can create, manage, and delete a WhatsApp instance. This involves the API gateway, the database, and the Docker daemon working in concert, providing the highest level of confidence in the system's functionality.
+      steps:
+        - id: "s1-e2e-instance"
+          status: "todo"
+          name: "1. Implement E2E Test for Instance Lifecycle"
+          reason: |
+            To test the full create-and-delete lifecycle of an instance. This test will make real HTTP requests, trigger container creation, verify database state, and then clean up all resources, ensuring the system is idempotent and robust.
+          files:
+            - "gateway/tests/e2e/instances.test.ts"
+            - "gateway/tests/helpers/setup.ts"
+          operations:
+            - "Create the test file `gateway/tests/e2e/instances.test.ts`."
+            - "In `setup.ts`, implement helper functions to: start the Elysia app server, seed a test user and node into the database, and clean up the database."
+            - "In `instances.test.ts`, use `beforeAll` and `afterAll` hooks to manage the app server and database connection."
+            - "Use `afterEach` to clean up any created instances and containers to ensure test isolation."
+            - "Write a test case for `POST /api/instances`:"
+            - "- Send a valid request with an API key."
+            - "- Assert a `200` status code and that the response body contains the new instance details."
+            - "- Use `dockerode` to verify a container with the corresponding instance ID label has been created and is running."
+            - "- Query the database directly to confirm the `instances` table contains the new record."
+            - "Write a test case for `DELETE /api/instances/:id`:"
+            - "- First, create an instance via the API."
+            - "- Then, send a `DELETE` request to its endpoint."
+            - "- Assert a `204` status code."
+            - "- Use `dockerode` to verify the container has been removed."
+            - "- Query the database to confirm the instance record has been deleted."
+      context_files:
+        compact:
+          - "gateway/src/index.ts"
+          - "gateway/src/docker.service.ts"
+          - "drizzle/schema.ts"
+        medium:
+          - "gateway/src/index.ts"
+          - "gateway/src/docker.service.ts"
+          - "drizzle/schema.ts"
+          - "README.md"
+        extended:
+          - "gateway/src/index.ts"
+          - "gateway/src/docker.service.ts"
+          - "drizzle/schema.ts"
+          - "README.md"
+          - "docker-compose.worker.yml"
+          - "providers/whatsmeow/main.go"
+
+    - id: "j1k2l3-internal"
+      status: "todo"
+      isolation: false
+      agent_id: "agent-e2e"
+      depends_on: ["a1b2c3-setup", "g7h8i9-e2e"]
+      name: "Part 4: End-to-End Tests for Internal State API"
+      reason: |
+        The state snapshotting feature is critical for zero-downtime migrations. This test will validate that the internal, secret-protected endpoints for uploading and downloading session data are working correctly, ensuring that instance state can be reliably persisted and restored.
+      steps:
+        - id: "s1-e2e-state"
+          status: "todo"
+          name: "1. Implement E2E Test for State Snapshotting"
+          reason: |
+            To verify that a provider container can successfully upload a binary state snapshot and that the gateway can retrieve it. This ensures the `bytea` column type and the request/response handling for binary data are correct.
+          files:
+            - "gateway/tests/e2e/state.test.ts"
+          operations:
+            - "Create the test file `gateway/tests/e2e/state.test.ts`."
+            - "Use similar `beforeAll`/`afterAll` setup as the instance tests."
+            - "In a `beforeEach` hook, create a test instance in the database so we have a valid `instanceId`."
+            - "Write a test case for `POST` and `GET` `/internal/state/:instanceId/snapshot`:"
+            - "- Create a sample `ArrayBuffer` to act as the snapshot payload."
+            - "- Send a `POST` request to the endpoint with the `x-internal-secret` header and the `ArrayBuffer` as the body."
+            - "- Assert a `204` status code."
+            - "- Query the `instance_state` table to confirm a record with key `session_snapshot` was created and its `value` is not null."
+            - "- Send a `GET` request to the same endpoint with the `x-internal-secret` header."
+            - "- Assert a `200` status code and that the response body (`await res.arrayBuffer()`) is identical to the original payload."
+      context_files:
+        compact:
+          - "gateway/src/index.ts"
+          - "drizzle/schema.ts"
+        medium:
+          - "gateway/src/index.ts"
+          - "drizzle/schema.ts"
+          - "providers/whatsmeow/main.go"
+        extended:
+          - "gateway/src/index.ts"
+          - "drizzle/schema.ts"
+          - "providers/whatsmeow/main.go"
+
+  conclusion: |
+    Upon completion of this plan, the `whatsapp-gateway-saas` project will have a foundational, multi-layered test suite. This significantly de-risks future development, enables safe refactoring, and provides a quality gate for CI/CD pipelines. The E2E tests, in particular, will offer a high degree of confidence that the core functionality of the system works as expected in an integrated, production-like environment. This is a critical step in maturing the codebase from a prototype to a reliable, production-ready service.
+  context_files:
+    compact:
+      - "gateway/package.json"
+      - "package.json"
+      - "gateway/src/index.ts"
+      - "gateway/src/docker.service.ts"
+    medium:
+      - "gateway/package.json"
+      - "package.json"
+      - "gateway/src/index.ts"
+      - "gateway/src/docker.service.ts"
+      - "drizzle/schema.ts"
+      - "README.md"
+    extended:
+      - "gateway/package.json"
+      - "package.json"
+      - "gateway/src/index.ts"
+      - "gateway/src/docker.service.ts"
+      - "drizzle/schema.ts"
+      - "README.md"
+      - "docker-compose.worker.yml"
+      - "providers/whatsmeow/main.go"
+      - "gateway/tsconfig.json"

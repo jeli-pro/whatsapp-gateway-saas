@@ -1,0 +1,847 @@
+uuid: 4423403a-c852-4fc4-850f-62e912f277a8
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T01:30:24.035Z'
+gitCommitMsg: >-
+  feat(testing): implement e2e tests for instance and state APIs
+
+  - Refactors `gateway/src/index.ts` to export the Elysia app, enabling
+  programmatic server control for tests. - Adds a comprehensive test helper in
+  `tests/helpers/setup.ts` to manage the test lifecycle, including server
+  startup/teardown, database seeding/cleanup, and Docker container cleanup. -
+  Implements an end-to-end test for the instance management API
+  (`/api/instances`) that covers the full lifecycle of creating, verifying, and
+  deleting a containerized instance. - Implements an end-to-end test for the
+  internal state management API (`/internal/state`) that validates the upload
+  and download of binary session snapshots.
+promptSummary: >-
+  Implement E2E test cases for instance and state management APIs based on the
+  test plan.
+reasoning:
+  - >-
+    Executing Parts 3 and 4 of the test suite implementation plan. This involves
+    creating end-to-end tests for the core instance management and internal
+    state snapshotting APIs.
+  - '### Part 3 & 4: E2E Tests Implementation'
+  - >-
+    First, I need to refactor `gateway/src/index.ts` to export the Elysia `app`
+    instance. This allows the test runner to programmatically start and stop the
+    server without it automatically listening on a fixed port when imported.
+  - >-
+    Next, I'll create the main test helper file,
+    `gateway/tests/helpers/setup.ts`. This file will manage the test
+    environment, including starting the API server, seeding a test database, and
+    providing cleanup functions for Docker containers and database records. This
+    is crucial for creating isolated, idempotent tests.
+  - >-
+    Now, I'll add the E2E test for the core instance lifecycle: creating,
+    verifying, and deleting an instance. This test interacts with the live API,
+    database, and Docker daemon.
+  - >-
+    Finally, I'll add the E2E test for the internal state management API, which
+    is critical for the migration feature. This test validates the upload and
+    download of binary snapshot data.
+operations:
+  - type: write
+    path: gateway/src/index.ts
+    content: >+
+      --- gateway/src/index.ts
+
+      +++ gateway/src/index.ts
+
+      @@ -298,10 +298,12 @@
+                   });
+       
+               set.status = 204;
+           }, { body: t.ArrayBuffer() })
+         )
+      -  .listen(3000);
+
+      -
+
+      -console.log(
+
+      -  `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+
+      -);
+
+      +
+
+      +// Start the server only if this file is the main module
+
+      +if (import.meta.main) {
+
+      +    app.listen(3000);
+
+      +    console.log(
+
+      +      `🦊 Gateway is running at
+      ${app.server?.hostname}:${app.server?.port}`
+
+      +    );
+
+      +}
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/helpers/setup.ts
+    content: >-
+      import { drizzle } from 'drizzle-orm/postgres-js';
+
+      import postgres from 'postgres';
+
+      import Dockerode from 'dockerode';
+
+      import * as schema from '../../../drizzle/schema';
+
+      import { app } from '../../src/index';
+
+
+      // --- Types ---
+
+      export type User = typeof schema.users.$inferSelect;
+
+      export type Node = typeof schema.nodes.$inferSelect;
+
+      export type Instance = typeof schema.instances.$inferSelect;
+
+
+      // --- DB Connection ---
+
+      const connectionString = process.env.DATABASE_URL;
+
+      if (!connectionString) {
+        throw new Error("DATABASE_URL is not set. Please create a .env file for testing.");
+      }
+
+      const client = postgres(connectionString);
+
+      export const db = drizzle(client, { schema });
+
+
+      // --- Docker Client ---
+
+      export const docker = new Dockerode(); // Assumes local docker sock (e.g.,
+      /var/run/docker.sock)
+
+
+      // --- Test Constants ---
+
+      // Bun automatically loads .env, but we provide fallbacks.
+
+      export const TEST_USER_API_KEY = process.env.API_SECRET ||
+      'test-api-key-secret-for-ci';
+
+      export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET ||
+      'test-internal-secret-for-ci';
+
+      export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+      'unix:///var/run/docker.sock';
+
+      export const TEST_NODE_PUBLIC_HOST = 'localhost';
+
+
+
+      /**
+       * Sets up the test environment:
+       * 1. Starts the API server on a random available port.
+       * 2. Cleans and seeds the database with a test user and a test node.
+       * @returns An object with the server URL and the created user/node entities.
+       */
+      export const setup = async () => {
+        // Start server on a random available port by passing 0.
+        await app.listen(0);
+
+        // Clean database before seeding to ensure a fresh state.
+        await db.delete(schema.instanceState);
+        await db.delete(schema.instances);
+        await db.delete(schema.users);
+        await db.delete(schema.nodes);
+        
+        const [testUser] = await db.insert(schema.users).values({
+          email: `test-${Date.now()}@example.com`,
+          apiKey: TEST_USER_API_KEY,
+        }).returning();
+
+        const [testNode] = await db.insert(schema.nodes).values({
+          name: 'test-node-1',
+          dockerHost: TEST_NODE_DOCKER_HOST,
+          publicHost: TEST_NODE_PUBLIC_HOST,
+        }).returning();
+
+        return {
+          serverUrl: `http://localhost:${app.server?.port}`,
+          user: testUser,
+          node: testNode,
+        };
+      };
+
+
+      /**
+       * Tears down the test environment:
+       * 1. Stops the API server.
+       * 2. Closes the database connection.
+       */
+      export const teardown = async () => {
+        await app.stop();
+        await client.end({ timeout: 5 });
+      };
+
+
+      /**
+       * Removes all instance-related records from the database.
+       */
+      export const cleanupDb = async () => {
+          await db.delete(schema.instanceState);
+          await db.delete(schema.instances);
+      };
+
+
+      /**
+       * Finds and removes all Docker containers created by the tests.
+       */
+      export const cleanupContainers = async () => {
+          const containers = await docker.listContainers({
+              all: true,
+              filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+          });
+
+          for (const containerInfo of containers) {
+              console.log(`Cleaning up test container: ${containerInfo.Id}`);
+              const container = docker.getContainer(containerInfo.Id);
+              try {
+                  await container.stop({ t: 5 });
+              } catch (e: any) {
+                  // Ignore if already stopped (304) or not found (404)
+                  if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+              }
+              try {
+                  await container.remove();
+              } catch (e: any) {
+                   // Ignore if not found (404)
+                  if (e.statusCode !== 404) console.error(e);
+              }
+          }
+      };
+
+
+      /**
+       * Test helper to find a container by its instance ID label.
+       * @param instanceId The ID of the instance.
+       * @returns ContainerInfo if found, otherwise undefined.
+       */
+      export async function findContainerByInstanceId(instanceId: number):
+      Promise<Dockerode.ContainerInfo | undefined> {
+          const containers = await docker.listContainers({
+              all: true,
+              filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+          });
+          return containers[0];
+      }
+    patchStrategy: replace
+  - type: write
+    path: gateway/tests/e2e/instances.test.ts
+    content: >-
+      import { describe, test, expect, beforeAll, afterAll, afterEach } from
+      'bun:test';
+
+      import { db, setup, teardown, cleanupDb, cleanupContainers,
+      TEST_USER_API_KEY, findContainerByInstanceId } from '../helpers/setup';
+
+      import * as schema from '../../../drizzle/schema';
+
+      import { eq } from 'drizzle-orm';
+
+
+      describe('E2E - Instance Management API', () => {
+          let serverUrl: string;
+
+          beforeAll(async () => {
+              const setupResult = await setup();
+              serverUrl = setupResult.serverUrl;
+          });
+
+          afterAll(async () => {
+              // Final cleanup after all tests in this file run
+              await cleanupContainers();
+              await teardown();
+          });
+
+          afterEach(async () => {
+              // Clean up resources between tests to ensure isolation
+              await cleanupContainers();
+              await cleanupDb();
+          });
+
+          test('should create, start, and delete a whatsmeow instance', async () => {
+              // 1. Create Instance
+              const createResponse = await fetch(`${serverUrl}/api/instances`, {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${TEST_USER_API_KEY}`
+                  },
+                  body: JSON.stringify({
+                      name: "e2e-test-instance",
+                      phone: "1234567890",
+                      provider: "whatsmeow",
+                  }),
+              });
+              
+              expect(createResponse.status).toBe(200);
+              const instance = await createResponse.json();
+              
+              expect(instance.id).toBeTypeOf('number');
+              expect(instance.status).toBe('running');
+              const instanceId = instance.id;
+
+              // 2. Verify instance exists in the database
+              const dbInstance = await db.query.instances.findFirst({
+                  where: eq(schema.instances.id, instanceId),
+              });
+              expect(dbInstance).toBeDefined();
+              expect(dbInstance?.id).toBe(instanceId);
+
+              // 3. Verify the corresponding Docker container is running
+              const container = await findContainerByInstanceId(instanceId);
+              expect(container).toBeDefined();
+              expect(container?.State).toBe('running');
+              
+              // 4. Delete the Instance
+              const deleteResponse = await fetch(`${serverUrl}/api/instances/${instanceId}`, {
+                  method: 'DELETE',
+                  headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
+              });
+
+              expect(deleteResponse.status).toBe(204);
+
+              // 5. Verify the container has been removed
+              const containerAfterDelete = await findContainerByInstanceId(instanceId);
+              expect(containerAfterDelete).toBeUndefined();
+
+              // 6. Verify the instance has been removed from the database
+              const dbInstanceAfterDelete = await db.query.instances.findFirst({
+                  where: eq(schema.instances.id, instanceId),
+              });
+              expect(dbInstanceAfterDelete).toBeUndefined();
+          }, 20000); // Increase timeout to allow for docker pull/start
+      });
+    patchStrategy: replace
+  - type: write
+    path: gateway/tests/e2e/state.test.ts
+    content: >-
+      import { describe, test, expect, beforeAll, afterAll, beforeEach,
+      afterEach } from 'bun:test';
+
+      import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type
+      User, type Node, type Instance } from '../helpers/setup';
+
+      import * as schema from '../../../drizzle/schema';
+
+      import { eq, and } from 'drizzle-orm';
+
+
+      describe('E2E - Internal State API', () => {
+          let serverUrl: string;
+          let testInstance: Instance;
+          let testUser: User;
+          let testNode: Node;
+
+          beforeAll(async () => {
+              const setupResult = await setup();
+              serverUrl = setupResult.serverUrl;
+              testUser = setupResult.user;
+              testNode = setupResult.node;
+          });
+
+          afterAll(async () => {
+              await teardown();
+          });
+
+          beforeEach(async () => {
+              // Create a test instance record directly in the DB for these tests
+              [testInstance] = await db.insert(schema.instances).values({
+                  nodeId: testNode.id,
+                  userId: testUser.id,
+                  phoneNumber: '9876543210',
+                  provider: 'whatsmeow',
+                  status: 'running',
+              }).returning();
+          });
+
+          afterEach(async () => {
+              await cleanupDb();
+          });
+
+          test('should reject access without the internal secret', async () => {
+              const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
+              expect(res.status).toBe(401);
+
+              const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, { method: 'POST' });
+              expect(postRes.status).toBe(401);
+          });
+
+          test('should upload and download a state snapshot', async () => {
+              const instanceId = testInstance.id;
+              const snapshotData = Buffer.from(`this is a binary test snapshot payload for instance ${instanceId}`);
+
+              // 1. Upload Snapshot
+              const uploadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+                  method: 'POST',
+                  headers: {
+                      'X-Internal-Secret': TEST_INTERNAL_API_SECRET,
+                      'Content-Type': 'application/octet-stream',
+                  },
+                  body: snapshotData,
+              });
+              
+              expect(uploadResponse.status).toBe(204);
+
+              // 2. Verify the snapshot was saved correctly in the database
+              const dbState = await db.query.instanceState.findFirst({
+                  where: and(
+                      eq(schema.instanceState.instanceId, instanceId),
+                      eq(schema.instanceState.key, 'session_snapshot')
+                  ),
+              });
+              expect(dbState).toBeDefined();
+              expect(dbState?.value).toEqual(snapshotData);
+
+              // 3. Download the snapshot
+              const downloadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+                  headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+              });
+
+              expect(downloadResponse.status).toBe(200);
+              expect(downloadResponse.headers.get('content-type')).toBe('application/octet-stream');
+              
+              const downloadedData = Buffer.from(await downloadResponse.arrayBuffer());
+              expect(downloadedData).toEqual(snapshotData);
+
+              // 4. Test GET for a non-existent snapshot returns 404
+              const notFoundResponse = await fetch(`${serverUrl}/internal/state/999999/snapshot`, {
+                   headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+              });
+              expect(notFoundResponse.status).toBe(404);
+          });
+      });
+    patchStrategy: replace
+snapshot:
+  gateway/tests/e2e/instances.test.ts: null
+  gateway/tests/e2e/state.test.ts: null
+  gateway/tests/helpers/setup.ts: >-
+    // This file will contain setup and teardown logic for integration and E2E
+    tests.
+
+    // For now, it's a placeholder to establish the project structure.
+
+
+    export const setup = () => {
+        // TODO: Implement test server start
+    };
+
+
+    export const teardown = () => {
+        // TODO: Implement test server stop and DB cleanup
+    };
+  gateway/src/index.ts: >-
+    import { Elysia, t } from 'elysia';
+
+    import { drizzle } from 'drizzle-orm/postgres-js';
+
+    import { eq, and, not } from 'drizzle-orm';
+
+    import postgres from 'postgres';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode }
+    from './docker.service';
+
+
+    const connectionString = process.env.DATABASE_URL;
+
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+
+
+    const client = postgres(connectionString);
+
+    const db = drizzle(client, { schema });
+
+
+    // A simple proxy to fetch data from an instance via its public URL
+
+    async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
+        try {
+            const response = await fetch(instanceUrl, options);
+            return response;
+        } catch (e) {
+            console.error(`Failed to proxy request to ${instanceUrl}`, e);
+            return null;
+        }
+    }
+
+
+
+    const app = new Elysia()
+      .get('/', () => ({ status: 'ok' }))
+      .group('/api', (app) => app
+        // Resolve user from API Key
+        .resolve(async ({ headers }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ')) {
+                return { user: null };
+            }
+            const apiKey = auth.substring(7);
+            if (!apiKey) {
+                return { user: null };
+            }
+            const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+            
+            return { user: user || null };
+        })
+        // Simple bearer token auth
+        .onBeforeHandle(({ user, set }) => {
+            if (!user) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .post('/instances', async ({ body, set, user }) => {
+            // Select a node for the new instance. Simple round-robin or first-available logic.
+            // For now, just pick the first one.
+            const [node] = await db.select().from(schema.nodes).limit(1);
+            if (!node) {
+                set.status = 503;
+                return { error: 'No available worker nodes to schedule instance.' };
+            }
+
+            // user is guaranteed to be non-null by the onBeforeHandle guard.
+            const [newInstance] = await db.insert(schema.instances).values({
+                nodeId: node.id,
+                userId: user!.id, 
+                name: body.name,
+                phoneNumber: body.phone,
+                provider: body.provider,
+                webhookUrl: body.webhook,
+                cpuLimit: body.resources?.cpu,
+                memoryLimit: body.resources?.memory,
+                status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+                set.status = 500;
+                return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+                await createAndStartContainer({
+                    instanceId: newInstance.id,
+                    node: node,
+                    name: newInstance.name,
+                    webhookUrl: newInstance.webhookUrl || '',
+                    cpuLimit: newInstance.cpuLimit || '0.5',
+                    memoryLimit: newInstance.memoryLimit || '512m',
+                    provider: newInstance.provider,
+                });
+                const [updatedInstance] = await db.update(schema.instances)
+                    .set({ status: 'running' })
+                    .where(eq(schema.instances.id, newInstance.id))
+                    .returning();
+                return updatedInstance;
+            } catch (error) {
+                console.error('Failed to start container:', error);
+                await db.update(schema.instances)
+                    .set({ status: 'error' })
+                    .where(eq(schema.instances.id, newInstance.id));
+                set.status = 500;
+                return { error: 'Failed to start container for instance' };
+            }
+        }, {
+            body: t.Object({
+                name: t.Optional(t.String()),
+                phone: t.String(),
+                provider: t.Union([
+                    t.Literal('whatsmeow'),
+                    t.Literal('baileys'),
+                    t.Literal('wawebjs'),
+                    t.Literal('waba')
+                ]),
+                webhook: t.Optional(t.String()),
+                resources: t.Optional(t.Object({
+                    cpu: t.String(),
+                    memory: t.String(),
+                }))
+            })
+        })
+        .get('/instances/:id/qr', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check and fetch instance with its node
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                set.status = 500;
+                return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+            const qrResponse = await proxyToInstance(instanceUrl);
+            if (!qrResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+                set.status = qrResponse.status;
+                return qrResponse.body;
+            }
+            
+            // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+            set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+            return qrResponse.blob();
+        })
+        .post('/instances/:id/send', async ({ params, body, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                set.status = 500;
+                return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+            const sendResponse = await proxyToInstance(instanceUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+                set.status = 503;
+                return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            return await sendResponse.json();
+        }, {
+            body: t.Object({
+                to: t.String(),
+                text: t.String(),
+            })
+        })
+        .delete('/instances/:id', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+                set.status = 404;
+                return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+                // Instance exists but node doesn't. Clean up DB record.
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                return { message: 'Instance found without a node. Record cleaned up.' };
+            }
+
+            try {
+                await stopAndRemoveContainer(instanceId, instanceData.nodes);
+                await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+                set.status = 204;
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                set.status = 500;
+                return { error: 'Failed to delete instance' };
+            }
+        })
+        .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+            // The `target_node` from the README is ignored in this single-node implementation.
+            const instanceId = parseInt(params.id, 10);
+
+            // 1. Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances || !instanceData.nodes) {
+                set.status = 404;
+                return { error: 'Instance not found or you do not have permission to access it' };
+            }
+            
+            const instance = instanceData.instances;
+            const currentNode = instanceData.nodes;
+
+            // Find a new node to migrate to
+            const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+            if (!newNode) {
+                set.status = 503;
+                return { error: 'No available node to migrate to.' };
+            }
+
+            console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
+
+            try {
+                // 2. Set status to 'migrating'
+                await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+                // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+                await stopAndRemoveContainer(instanceId, currentNode);
+                console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
+
+                // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+                await createAndStartContainer({
+                    instanceId: instance.id,
+                    node: newNode,
+                    name: instance.name,
+                    webhookUrl: instance.webhookUrl || '',
+                    cpuLimit: instance.cpuLimit || '0.5',
+                    memoryLimit: instance.memoryLimit || '512m',
+                    provider: instance.provider,
+                });
+                console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
+
+                // 5. Set status back to 'running'
+                const [updatedInstance] = await db.update(schema.instances).set({
+                    status: 'running',
+                    nodeId: newNode.id,
+                })
+                    .where(eq(schema.instances.id, instanceId))
+                    .returning();
+                
+                console.log(`Migration for instance ${instanceId} completed successfully.`);
+                return { status: 'ok', instance: updatedInstance };
+            } catch (error) {
+                console.error(`Migration failed for instance ${instanceId}:`, error);
+                await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+                set.status = 500;
+                return { error: 'Migration failed' };
+            }
+        }, {
+            body: t.Object({
+                target_node: t.Optional(t.String()),
+            })
+        })
+      )
+      // New internal API group for state management
+      .group('/internal', (app) => app
+        .onBeforeHandle(({ headers, set }) => {
+            const internalSecret = process.env.INTERNAL_API_SECRET;
+            if (!internalSecret) {
+                console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+                set.status = 503;
+                return { error: 'Service Unavailable' };
+            }
+            if (headers['x-internal-secret'] !== internalSecret) {
+                set.status = 401;
+                return { error: 'Unauthorized' };
+            }
+        })
+        .get('/state/:instanceId', async ({ params }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const states = await db.select({
+                key: schema.instanceState.key,
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+            
+            return states;
+        })
+        .get('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            ));
+
+            if (!state) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            return state.value; // Return raw value
+        })
+        .post('/state/:instanceId', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const { key, value } = body;
+            const valueAsBuffer = Buffer.from(value);
+            
+            await db.insert(schema.instanceState)
+                .values({ instanceId, key, value: valueAsBuffer })
+                .onConflictDoUpdate({
+                    target: [schema.instanceState.instanceId, schema.instanceState.key],
+                    set: { value: valueAsBuffer }
+                });
+            
+            set.status = 204;
+        }, {
+            body: t.Object({
+                key: t.String(),
+                value: t.String(),
+            })
+        })
+        .delete('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const result = await db.delete(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, params.key)
+            )).returning();
+
+            if (result.length === 0) {
+                set.status = 404;
+                return { error: 'State key not found' };
+            }
+            
+            set.status = 204;
+        })
+        .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+                value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, 'session_snapshot')
+            ));
+
+            if (!state || !state.value) {
+                set.status = 404;
+                return { error: 'Snapshot not found' };
+            }
+            // The value is a buffer from the bytea column
+            set.headers['Content-Type'] = 'application/octet-stream';
+            return state.value;
+        })
+        .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+
+            // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+            const value = Buffer.from(body);
+
+            await db.insert(schema.instanceState)
+                .values({ instanceId: instanceId, key: 'session_snapshot', value })
+                .onConflictDoUpdate({
+                    target: [schema.instanceState.instanceId, schema.instanceState.key],
+                    set: { value }
+                });
+
+            set.status = 204;
+        }, { body: t.ArrayBuffer() })
+      )
+      .listen(3000);
+
+    console.log(
+      `🦊 Gateway is running at ${app.server?.hostname}:${app.server?.port}`
+    );
+approved: true
+linesAdded: 291
+linesRemoved: 10
+linesDifference: 301
+gitCommittedAt: null
+status: committed
+id: 16

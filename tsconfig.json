@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "drizzle" },
     { "path": "gateway" }
   ]
 }

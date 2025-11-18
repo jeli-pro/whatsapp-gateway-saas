@@ -43,7 +43,7 @@ interface CreateContainerOptions {
     provider: string;
 }
 
-function sanitizeForContainerName(name: string): string {
+export function sanitizeForContainerName(name: string): string {
     if (!name) return '';
     return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
 }
@@ -186,7 +186,7 @@ async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
     }
 }
 
-function parseMemory(memoryStr: string): number {
+export function parseMemory(memoryStr: string): number {
     if (!memoryStr) return 0; // default
     const unit = memoryStr.slice(-1).toLowerCase();
     const value = parseFloat(memoryStr.slice(0, -1));
