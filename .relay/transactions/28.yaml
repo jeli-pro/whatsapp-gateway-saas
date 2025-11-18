@@ -1,0 +1,1148 @@
+uuid: c220f188-f54f-4091-a67b-232585f6e80b
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T03:21:05.769Z'
+gitCommitMsg: >-
+  fix(e2e): Resolve networking issue in instance interaction tests
+
+  The E2E tests for instance interaction (`/qr`, `/send`) were failing with
+  connection refused errors. This was because the gateway, running on the host,
+  could not resolve the container's `publicHost` and the container ports were
+  not exposed to the host.
+
+  This commit resolves the issue by implementing a test-specific networking
+  strategy:
+
+  1.  **Conditional Port Mapping:** Provider containers now map their
+      internal port (8080) to a predictable host port (30000 + instanceId)
+      only when `NODE_ENV` is 'test'.
+
+  2.  **Environment-Aware Proxying:** A new `getInstanceProxyUrl` helper
+      is introduced in `app.ts`. It generates a direct `localhost:<port>`
+      URL during tests and preserves the Traefik-based
+      `publicHost/instance/...` URL for production.
+
+  3.  **Test Config Update:** The `publicHost` for nodes created during
+      E2E tests is now set to `localhost` to align with the new proxy logic.
+
+  This fix makes the E2E tests robust and reliable without compromising the
+  production-ready, Traefik-based routing architecture.
+promptSummary: >-
+  The user is experiencing failing E2E tests related to instance interactions.
+  The errors indicate a networking problem where the gateway cannot connect to
+  the provider containers. I need to fix this without altering the production
+  architecture.
+reasoning:
+  - >-
+    Of course. Based on the test failures, it's clear there's a networking gap
+    between the test runner's environment (the host) and the Docker containers
+    it spawns. The gateway can't resolve the container hostnames.
+  - >-
+    My solution will introduce a test-specific networking layer. During tests,
+    provider containers will map their internal port to a predictable, unique
+    port on the host. The gateway's proxy logic will be updated to be
+    environment-aware: in tests, it will connect directly to `localhost` on the
+    mapped port; in production, it will continue to use the public hostname for
+    proxying through Traefik. This isolates the fix to the test environment,
+    preserving the production architecture.
+  - '### Part 1: Enable Predictable Port Mapping in Test Environment'
+  - >-
+    First, I'll modify the `docker.service.ts` to expose and map the container's
+    internal port (8080) to a predictable port on the host, but only when
+    `NODE_ENV` is `'test'`. The host port will be calculated as `30000 +
+    instanceId` to prevent collisions.
+  - '### Part 2: Centralize and Adapt Proxy URL Generation'
+  - >-
+    Next, I'll create a helper function in `app.ts` to generate the correct
+    proxy URL based on the environment. Then I'll refactor the API endpoints to
+    use this new helper. This centralizes the logic and keeps the endpoint
+    handlers clean.
+  - '### Part 3: Update Test Node Configuration'
+  - >-
+    Finally, I will update the test setup helper to configure the `publicHost`
+    of worker nodes as `localhost`. This ensures the new URL helper generates
+    the correct address for the gateway to connect to the port-mapped container
+    on the host machine. I'll also remove an unused constant.
+  - >-
+    These changes should resolve the test failures by creating a reliable
+    communication channel between the gateway and the provider containers within
+    the E2E test environment.
+operations:
+  - type: write
+    path: gateway/src/docker.service.ts
+    content: |
+      <<<<<<< SEARCH
+          // 2. Create the container
+          const createResponse = await docker.createContainer({
+              Image: DOCKER_IMAGE,
+              name: containerName,
+              Env: [
+                  `INSTANCE_ID=${options.instanceId}`,
+                  `GATEWAY_URL=${gatewayUrl}`,
+                  `INTERNAL_API_SECRET=${internalApiSecret}`,
+                  `WEBHOOK_URL=${options.webhookUrl}`,
+                  `PORT=8080`,
+                  `GOMAXPROCS=1`
+              ],
+              Labels: {
+                  'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+                  // Traefik Labels for reverse proxying
+                  'traefik.enable': 'true',
+                  [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+                  [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+                  [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+                  [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+                  // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+                  [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+                  [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
+              },
+              HostConfig: {
+                  RestartPolicy: { Name: 'unless-stopped' },
+                  Memory: parseMemory(options.memoryLimit),
+                  NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+                  NetworkMode: process.env.NODE_ENV === 'test' ? 'bridge' : 'worker-net', // Use bridge network for tests
+              },
+          });
+      =======
+          // 2. Create the container
+          const createResponse = await docker.createContainer({
+              Image: DOCKER_IMAGE,
+              name: containerName,
+              Env: [
+                  `INSTANCE_ID=${options.instanceId}`,
+                  `GATEWAY_URL=${gatewayUrl}`,
+                  `INTERNAL_API_SECRET=${internalApiSecret}`,
+                  `WEBHOOK_URL=${options.webhookUrl}`,
+                  `PORT=8080`,
+                  `GOMAXPROCS=1`
+              ],
+              // Expose port 8080 from the container, but only map it to the host during tests.
+              ExposedPorts: {
+                  '8080/tcp': {},
+              },
+              Labels: {
+                  'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+                  // Traefik Labels for reverse proxying
+                  'traefik.enable': 'true',
+                  [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+                  [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+                  [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+                  [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+                  // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+                  [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+                  [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
+              },
+              HostConfig: {
+                  RestartPolicy: { Name: 'unless-stopped' },
+                  Memory: parseMemory(options.memoryLimit),
+                  NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+                  NetworkMode: process.env.NODE_ENV === 'test' ? 'bridge' : 'worker-net', // Use bridge network for tests
+                  // Port mapping is only applied in the test environment for direct access.
+                  // In production, Traefik handles routing via the docker network.
+                  ...(process.env.NODE_ENV === 'test' && {
+                      PortBindings: {
+                          '8080/tcp': [{ HostPort: String(30000 + options.instanceId) }],
+                      }
+                  })
+              },
+          });
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+  - type: write
+    path: gateway/src/app.ts
+    content: >+
+      --- gateway/src/app.ts
+
+      +++ gateway/src/app.ts
+
+      @@ -1,6 +1,17 @@
+       import { Elysia, t } from 'elysia';
+       import { eq, and, not } from 'drizzle-orm';
+       import * as schema from '../../drizzle/schema';
+       import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode } from './docker.service';
+       
+      +function getInstanceProxyUrl(instance: { id: number }, node: {
+      publicHost: string }, subPath: string): string {
+
+      +  // In test environment, we connect directly to the mapped port on
+      localhost.
+
+      +  if (process.env.NODE_ENV === 'test') {
+
+      +    const port = 30000 + instance.id;
+
+      +    // The `publicHost` is configured to be 'localhost' in the test
+      setup.
+
+      +    return `http://${node.publicHost}:${port}${subPath}`;
+
+      +  }
+
+      +  // In production, we use the public host and Traefik path prefix.
+
+      +  return `http://${node.publicHost}/instances/${instance.id}${subPath}`;
+
+      +}
+
+      +
+       /**
+        * Creates the Elysia app instance with all routes configured.
+        * Database connection is injected to avoid circular dependencies in tests.
+      @@ -142,7 +153,7 @@
+                 return { error: 'Instance is not associated with a node.' };
+               }
+       
+      -        const instanceUrl =
+      `http://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+
+      +        const instanceUrl = getInstanceProxyUrl(instanceData.instances,
+      instanceData.nodes, '/qr');
+               const qrResponse = await proxyToInstance(instanceUrl);
+               if (!qrResponse) {
+                 set.status = 503;
+      @@ -171,7 +182,7 @@
+                 return { error: 'Instance is not associated with a node.' };
+               }
+       
+      -        const instanceUrl =
+      `http://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+      +        const instanceUrl = getInstanceProxyUrl(instanceData.instances,
+      instanceData.nodes, '/send');
+       
+               const sendResponse = await proxyToInstance(instanceUrl, {
+                 method: 'POST',
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/helpers/setup.ts
+    content: >
+      <<<<<<< SEARCH
+
+      export let TEST_ADMIN_API_SECRET: string;
+
+      export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+      'unix:///var/run/docker.sock';
+
+      export const TEST_NODE_PUBLIC_HOST_PREFIX = 'test-node.local';
+
+
+      const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST
+      });
+
+      =======
+
+      export let TEST_ADMIN_API_SECRET: string;
+
+      export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+      'unix:///var/run/docker.sock';
+
+
+      const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST
+      });
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+        for (let i = 0; i < nodeCount; i++) {
+          const [testNode] = await db.insert(schema.nodes).values({
+            name: `test-node-${i + 1}`,
+            dockerHost: TEST_NODE_DOCKER_HOST,
+            publicHost: `${TEST_NODE_PUBLIC_HOST_PREFIX}-${i + 1}`,
+          }).returning();
+          testNodes.push(testNode);
+        }
+      =======
+        for (let i = 0; i < nodeCount; i++) {
+          const [testNode] = await db.insert(schema.nodes).values({
+            name: `test-node-${i + 1}`,
+            dockerHost: TEST_NODE_DOCKER_HOST,
+            // In tests, the gateway connects to localhost with a mapped port.
+            // In production, this would be the actual public domain/IP.
+            publicHost: `localhost`,
+          }).returning();
+          testNodes.push(testNode);
+        }
+      >>>>>>> REPLACE
+    patchStrategy: search-replace
+snapshot:
+  gateway/src/docker.service.ts: >-
+    import { getDockerClientForNode, type ContainerInfo } from
+    './docker.client';
+
+
+    // A simple representation of a worker node, passed from the API layer.
+
+    export interface WorkerNode {
+        id: number;
+        dockerHost: string;
+        publicHost: string;
+    }
+
+
+    function getImageForProvider(provider: string): string {
+        const imageMap: Record<string, string> = {
+            'whatsmeow': 'jelipro/whatsapp-gateway-whatsmeow:latest',
+            // 'baileys': 'some-other-image:latest',
+        };
+        const image = imageMap[provider];
+        if (!image) {
+            throw new Error(`Unsupported provider: ${provider}`);
+        }
+        return image;
+    }
+
+
+    interface CreateContainerOptions {
+        instanceId: number;
+        node: WorkerNode;
+        name?: string | null;
+        webhookUrl: string;
+        cpuLimit: string;
+        memoryLimit: string;
+        provider: string;
+    }
+
+
+    export function sanitizeForContainerName(name: string): string {
+        if (!name) return '';
+        return name.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/-+/g, '-');
+    }
+
+
+    export async function createAndStartContainer(options:
+    CreateContainerOptions) {
+        const docker = getDockerClientForNode(options.node);
+        const saneName = sanitizeForContainerName(options.name || '');
+        const containerName = options.name 
+            ? `wgs-${options.instanceId}-${saneName}`
+            : `wgs-instance-${options.instanceId}`;
+
+        const routerName = `wgs-instance-${options.instanceId}`;
+
+        console.log(`Creating container ${containerName} for instance ${options.instanceId} on node ${options.node.publicHost}`);
+
+        const DOCKER_IMAGE = getImageForProvider(options.provider);
+
+        // 1. Pull the image on the target node
+        await pullImage(DOCKER_IMAGE, options.node);
+
+        const gatewayUrl = process.env.GATEWAY_URL; // Should be reachable from worker nodes
+        const internalApiSecret = process.env.INTERNAL_API_SECRET;
+
+        // 2. Create the container
+        const createResponse = await docker.createContainer({
+            Image: DOCKER_IMAGE,
+            name: containerName,
+            Env: [
+                `INSTANCE_ID=${options.instanceId}`,
+                `GATEWAY_URL=${gatewayUrl}`,
+                `INTERNAL_API_SECRET=${internalApiSecret}`,
+                `WEBHOOK_URL=${options.webhookUrl}`,
+                `PORT=8080`,
+                `GOMAXPROCS=1`
+            ],
+            Labels: {
+                'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+                // Traefik Labels for reverse proxying
+                'traefik.enable': 'true',
+                [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+                [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+                [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+                [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+                // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+                [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+                [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
+            },
+            HostConfig: {
+                RestartPolicy: { Name: 'unless-stopped' },
+                Memory: parseMemory(options.memoryLimit),
+                NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+                NetworkMode: process.env.NODE_ENV === 'test' ? 'bridge' : 'worker-net', // Use bridge network for tests
+            },
+        });
+
+        // 3. Start the container
+        await docker.startContainer(createResponse.Id);
+        console.log(`Container started with ID: ${createResponse.Id}`);
+
+        return docker.inspectContainer(createResponse.Id);
+    }
+
+
+    export async function stopAndRemoveContainer(instanceId: number, node:
+    WorkerNode) {
+        const docker = getDockerClientForNode(node);
+        try {
+            const container = await findContainer(instanceId, node);
+            if (!container) {
+                console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+                return;
+            }
+
+            console.log(`Stopping and removing container ${container.Id} for instance ${instanceId}`);
+            
+            // Stop with a 10-second timeout to allow graceful shutdown
+            await docker.stopContainer(container.Id, { t: 10 }).catch(err => {
+                // Ignore "container already stopped" or "no such container" errors
+                if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+            });
+
+            await docker.removeContainer(container.Id).catch(err => {
+                 // Ignore "no such container" errors
+                if (err.statusCode !== 404) throw err;
+            });
+            console.log(`Container for instance ${instanceId} removed successfully.`);
+        } catch (error: any) {
+            if (error.statusCode === 404) {
+                 console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
+                 return;
+            }
+            console.error(`Error stopping/removing container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+            throw error;
+        }
+    }
+
+
+    export async function findContainer(instanceId: number, node: WorkerNode):
+    Promise<ContainerInfo | null> {
+        const docker = getDockerClientForNode(node);
+        try {
+            const containers = await docker.listContainers({
+                all: true,
+                filters: {
+                    label: [`whatsapp-gateway-saas.instance-id=${instanceId}`]
+                }
+            });
+
+            if (containers.length === 0) {
+                return null;
+            }
+            if (containers.length > 1) {
+                console.warn(`Found multiple containers for instance ${instanceId} on node ${node.dockerHost}. Using the first one.`);
+            }
+            return containers[0];
+        } catch (error) {
+            console.error(`Error finding container for instance ${instanceId} on node ${node.dockerHost}:`, error);
+            return null;
+        }
+    }
+
+
+    async function pullImage(imageName: string, node: WorkerNode): Promise<void>
+    {
+        const docker = getDockerClientForNode(node);
+        console.log(`Ensuring image ${imageName} is available on node ${node.dockerHost}...`);
+        try {
+            const images = await docker.listImages({ filters: { reference: [imageName] } });
+            if (images.length > 0) {
+                console.log(`Image ${imageName} already exists on node.`);
+                return;
+            }
+
+            console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
+            // The pull response is a stream of progress events. We just need to wait for it to finish.
+            const pullResponse = await docker.pullImage(imageName);
+            // Consuming the body ensures we wait for the pull to complete.
+            await pullResponse.text();
+
+            console.log(`Image ${imageName} pulled successfully on node.`);
+        } catch (error) {
+            console.error(`Failed to pull image ${imageName} on node ${node.dockerHost}:`, error);
+            throw error;
+        }
+    }
+
+
+    export function parseMemory(memoryStr: string): number {
+        if (!memoryStr) return 0; // default
+        const unit = memoryStr.slice(-1).toLowerCase();
+        const value = parseFloat(memoryStr.slice(0, -1));
+
+        if (isNaN(value)) return 0;
+
+        switch (unit) {
+            case 'g': return value * 1024 * 1024 * 1024;
+            case 'm': return value * 1024 * 1024;
+            case 'k': return value * 1024;
+            default: return parseFloat(memoryStr); // Assume bytes if no unit
+        }
+    }
+  gateway/tests/helpers/setup.ts: >-
+    import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+
+    import postgres, { type Sql } from 'postgres';
+
+    import { getDockerClientForNode, type ContainerInfo } from
+    '../../src/docker.client';
+
+    import * as schema from '../../../drizzle/schema';
+
+    import { createApp } from '../../src/app';
+
+    import { ensureTestEnvironment, getEnvironment, cleanup as testCleanup }
+    from '../utils/test-setup';
+
+
+    // --- Types ---
+
+    export type User = typeof schema.users.$inferSelect;
+
+    export type Node = typeof schema.nodes.$inferSelect;
+
+    export type Instance = typeof schema.instances.$inferSelect;
+
+
+    // --- DB Connection ---
+
+    // These are initialized in setup() to prevent connection attempts before
+    the test DB is ready.
+
+    let client: Sql;
+
+    export let db: PostgresJsDatabase<typeof schema>;
+
+
+    // --- Test Constants (initialized in setup) ---
+
+    export let TEST_USER_API_KEY: string;
+
+    export let TEST_INTERNAL_API_SECRET: string;
+
+    export let TEST_ADMIN_API_SECRET: string;
+
+    export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+    'unix:///var/run/docker.sock';
+
+    export const TEST_NODE_PUBLIC_HOST_PREFIX = 'test-node.local';
+
+
+    const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST
+    });
+
+
+    interface SetupOptions {
+      nodeCount?: number;
+    }
+
+
+
+    /**
+     * Sets up the test environment:
+     * 1. Establishes DB connection.
+     * 2. Starts the API server on a random available port.
+     * 3. Cleans and seeds the database with a test user and a test node.
+     * @returns An object with the server URL and the created user/node entities.
+     */
+    export const setup = async (options: SetupOptions = {}) => {
+      const { nodeCount = 1 } = options;
+      // Ensure the environment is ready. This is idempotent and safe to call.
+      await ensureTestEnvironment();
+
+      const env = getEnvironment(); // This will now succeed.
+      TEST_USER_API_KEY = env.API_SECRET;
+      TEST_INTERNAL_API_SECRET = env.INTERNAL_API_SECRET;
+      TEST_ADMIN_API_SECRET = env.ADMIN_API_SECRET;
+
+      // 1. Establish DB connection
+      // Use the connection string from the now-initialized environment
+      const connectionString = env.DATABASE_URL;
+      if (!connectionString) {
+        throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
+      }
+      client = postgres(connectionString);
+      db = drizzle(client, { schema });
+
+      // 2. Create app with database and start server on a random available port
+      const app = createApp(db);
+      await app.listen(0);
+
+      // 3. Clean database before seeding to ensure a fresh state.
+      await db.delete(schema.instanceState);
+      await db.delete(schema.instances);
+      await db.delete(schema.users);
+      await db.delete(schema.nodes);
+
+      const [testUser] = await db.insert(schema.users).values({
+        email: `test-${Date.now()}@example.com`,
+        apiKey: TEST_USER_API_KEY,
+      }).returning();
+
+      const testNodes: Node[] = [];
+      for (let i = 0; i < nodeCount; i++) {
+        const [testNode] = await db.insert(schema.nodes).values({
+          name: `test-node-${i + 1}`,
+          dockerHost: TEST_NODE_DOCKER_HOST,
+          publicHost: `${TEST_NODE_PUBLIC_HOST_PREFIX}-${i + 1}`,
+        }).returning();
+        testNodes.push(testNode);
+      }
+
+      return {
+        serverUrl: `http://localhost:${app.server?.port}`,
+        user: testUser,
+        nodes: testNodes,
+        app, // Return app instance for teardown
+      };
+    };
+
+
+    /**
+     * Tears down the test environment:
+     * 1. Stops the API server.
+     * 2. Closes the database connection.
+     * 3. Cleans up test database and environment.
+     */
+    export const teardown = async (app: any) => {
+      await app.stop();
+      if (client) {
+        await client.end({ timeout: 5 });
+      }
+      // Clean up the test environment (but not the database container)
+      await testCleanup();
+    };
+
+
+    /**
+     * Removes all instance-related records from the database.
+     */
+    export const cleanupDb = async () => {
+        // db is guaranteed to be initialized by setup() in beforeAll
+        await db.delete(schema.instanceState);
+        await db.delete(schema.instances);
+    };
+
+
+    /**
+     * Helper to create a test instance in the database.
+     */
+    export async function createTestInstance(
+        db: PostgresJsDatabase<typeof schema>,
+        user: User,
+        node: Node,
+        overrides: Partial<Omit<Instance, 'id' | 'userId' | 'nodeId'>> = {}
+    ): Promise<Instance> {
+        const [instance] = await db.insert(schema.instances).values({
+            nodeId: node.id,
+            userId: user.id,
+            phoneNumber: '9876543210',
+            provider: 'whatsmeow',
+            status: 'running', // Default to running for most API tests
+            ...overrides,
+        }).returning();
+        return instance;
+    }
+
+
+    /**
+     * Finds and removes all Docker containers created by the tests.
+     */
+    export const cleanupContainers = async () => {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+        });
+
+        for (const containerInfo of containers) {
+            console.log(`Cleaning up test container: ${containerInfo.Id}`);
+            try {
+                await docker.stopContainer(containerInfo.Id, { t: 5 });
+            } catch (e: any) {
+                // Ignore if already stopped (304) or not found (404)
+                if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+            }
+            try {
+                await docker.removeContainer(containerInfo.Id);
+            } catch (e: any) {
+                 // Ignore if not found (404)
+                if (e.statusCode !== 404) console.error(e);
+            }
+        }
+    };
+
+
+    /**
+     * Test helper to find a container by its instance ID label.
+     * @param instanceId The ID of the instance.
+     * @returns ContainerInfo if found, otherwise undefined.
+     */
+    export async function findContainerByInstanceId(instanceId: number):
+    Promise<ContainerInfo | undefined> {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+        });
+        return containers[0];
+    }
+  gateway/src/app.ts: >
+    import { Elysia, t } from 'elysia';
+
+    import { eq, and, not } from 'drizzle-orm';
+
+    import * as schema from '../../drizzle/schema';
+
+    import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode }
+    from './docker.service';
+
+
+    /**
+     * Creates the Elysia app instance with all routes configured.
+     * Database connection is injected to avoid circular dependencies in tests.
+     */
+    export function createApp(db: any) {
+      // A simple proxy to fetch data from an instance via its public URL
+      async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
+        try {
+          const response = await fetch(instanceUrl, options);
+          return response;
+        } catch (e) {
+          console.error(`Failed to proxy request to ${instanceUrl}`, e);
+          return null;
+        }
+      }
+
+      return new Elysia()
+        .get('/', () => ({ status: 'ok' }))
+        .group('/api', (app) => app
+          // Resolve user from API Key
+          .resolve(async ({ headers }) => {
+            const auth = headers['authorization'];
+            if (!auth || !auth.startsWith('Bearer ')) {
+              return { user: null };
+            }
+            const apiKey = auth.substring(7);
+            if (!apiKey) {
+              return { user: null };
+            }
+            const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+
+            return { user: user || null };
+          })
+          // Simple bearer token auth
+          .onBeforeHandle(({ user, set }) => {
+            if (!user) {
+              set.status = 401;
+              return { error: 'Unauthorized' };
+            }
+          })
+          .post('/instances', async ({ body, set, user }) => {
+            // Select a node for the new instance. Simple round-robin or first-available logic.
+            // For now, just pick the first one.
+            const [node] = await db.select().from(schema.nodes).limit(1);
+            if (!node) {
+              set.status = 503;
+              return { error: 'No available worker nodes to schedule instance.' };
+            }
+
+            // user is guaranteed to be non-null by the onBeforeHandle guard.
+            const [newInstance] = await db.insert(schema.instances).values({
+              nodeId: node.id,
+              userId: user!.id,
+              name: body.name,
+              phoneNumber: body.phone,
+              provider: body.provider,
+              webhookUrl: body.webhook,
+              cpuLimit: body.resources?.cpu,
+              memoryLimit: body.resources?.memory,
+              status: 'creating',
+            }).returning();
+
+            if (!newInstance) {
+              set.status = 500;
+              return { error: 'Failed to create instance in database' };
+            }
+
+            try {
+              await createAndStartContainer({
+                instanceId: newInstance.id,
+                node: node,
+                name: newInstance.name,
+                webhookUrl: newInstance.webhookUrl || '',
+                cpuLimit: newInstance.cpuLimit || '0.5',
+                memoryLimit: newInstance.memoryLimit || '512m',
+                provider: newInstance.provider,
+              });
+              const [updatedInstance] = await db.update(schema.instances)
+                .set({ status: 'running' })
+                .where(eq(schema.instances.id, newInstance.id))
+                .returning();
+              return updatedInstance;
+            } catch (error) {
+              console.error('Failed to start container:', error);
+              await db.update(schema.instances)
+                .set({ status: 'error' })
+                .where(eq(schema.instances.id, newInstance.id));
+              set.status = 500;
+              return { error: 'Failed to start container for instance' };
+            }
+          }, {
+            body: t.Object({
+              name: t.Optional(t.String()),
+              phone: t.String(),
+              provider: t.Union([
+                t.Literal('whatsmeow'),
+                t.Literal('baileys'),
+                t.Literal('wawebjs'),
+                t.Literal('waba')
+              ]),
+              webhook: t.Optional(t.String()),
+              resources: t.Optional(t.Object({
+                cpu: t.String(),
+                memory: t.String(),
+              }))
+            })
+          })
+          .get('/instances/:id/qr', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check and fetch instance with its node
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+            if (!instanceData || !instanceData.instances) {
+              set.status = 404;
+              return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+              set.status = 500;
+              return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `http://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+            const qrResponse = await proxyToInstance(instanceUrl);
+            if (!qrResponse) {
+              set.status = 503;
+              return { error: "Failed to connect to instance container." };
+            }
+            if (!qrResponse.ok) {
+              set.status = qrResponse.status;
+              return qrResponse.body;
+            }
+
+            // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+            set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+            return qrResponse.blob();
+          })
+          .post('/instances/:id/send', async ({ params, body, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+              set.status = 404;
+              return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+              set.status = 500;
+              return { error: 'Instance is not associated with a node.' };
+            }
+
+            const instanceUrl = `http://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+            const sendResponse = await proxyToInstance(instanceUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+
+            if (!sendResponse) {
+              set.status = 503;
+              return { error: "Failed to connect to instance container." };
+            }
+            set.status = sendResponse.status;
+            if (!sendResponse.ok) {
+              const errorText = await sendResponse.text();
+              try {
+                return JSON.parse(errorText);
+              } catch (e) {
+                return { error: errorText.trim() };
+              }
+            }
+            return await sendResponse.json();
+          }, {
+            body: t.Object({
+              to: t.String(),
+              text: t.String(),
+            })
+          })
+          .delete('/instances/:id', async ({ params, set, user }) => {
+            const instanceId = parseInt(params.id, 10);
+
+            // Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances) {
+              set.status = 404;
+              return { error: 'Instance not found' };
+            }
+            if (!instanceData.nodes) {
+              // Instance exists but node doesn't. Clean up DB record.
+              await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+              return { message: 'Instance found without a node. Record cleaned up.' };
+            }
+
+            try {
+              await stopAndRemoveContainer(instanceId, instanceData.nodes);
+              await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+              set.status = 204;
+            } catch (error) {
+              console.error('Failed to delete instance:', error);
+              set.status = 500;
+              return { error: 'Failed to delete instance' };
+            }
+          })
+          .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+            // The `target_node` from the README is ignored in this single-node implementation.
+            const instanceId = parseInt(params.id, 10);
+
+            // 1. Ownership check
+            const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+            if (!instanceData || !instanceData.instances || !instanceData.nodes) {
+              set.status = 404;
+              return { error: 'Instance not found or you do not have permission to access it' };
+            }
+
+            const instance = instanceData.instances;
+            const currentNode = instanceData.nodes;
+
+            // Find a new node to migrate to
+            const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+            if (!newNode) {
+              set.status = 503;
+              return { error: 'No available node to migrate to.' };
+            }
+
+            console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
+
+            try {
+              // 2. Set status to 'migrating'
+              await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+              // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+              await stopAndRemoveContainer(instanceId, currentNode);
+              console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
+
+              // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+              await createAndStartContainer({
+                instanceId: instance.id,
+                node: newNode,
+                name: instance.name,
+                webhookUrl: instance.webhookUrl || '',
+                cpuLimit: instance.cpuLimit || '0.5',
+                memoryLimit: instance.memoryLimit || '512m',
+                provider: instance.provider,
+              });
+              console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
+
+              // 5. Set status back to 'running'
+              const [updatedInstance] = await db.update(schema.instances).set({
+                status: 'running',
+                nodeId: newNode.id,
+              })
+                .where(eq(schema.instances.id, instanceId))
+                .returning();
+
+              console.log(`Migration for instance ${instanceId} completed successfully.`);
+              return { status: 'ok', instance: updatedInstance };
+            } catch (error) {
+              console.error(`Migration failed for instance ${instanceId}:`, error);
+              await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+              set.status = 500;
+              return { error: 'Migration failed' };
+            }
+          }, {
+            body: t.Object({
+              target_node: t.Optional(t.String()),
+            })
+          })
+        )
+        // New internal API group for state management
+        .group('/internal', (app) => app
+          .onBeforeHandle(({ headers, set }) => {
+            const internalSecret = process.env.INTERNAL_API_SECRET;
+            if (!internalSecret) {
+              console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+              set.status = 503;
+              return { error: 'Service Unavailable' };
+            }
+            if (headers['x-internal-secret'] !== internalSecret) {
+              set.status = 401;
+              return { error: 'Unauthorized' };
+            }
+          })
+          .get('/state/:instanceId', async ({ params }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const states = await db.select({
+              key: schema.instanceState.key,
+              value: schema.instanceState.value
+            }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+
+            return states;
+          })
+          .get('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+              value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+              eq(schema.instanceState.instanceId, instanceId),
+              eq(schema.instanceState.key, params.key)
+            ));
+
+            if (!state) {
+              set.status = 404;
+              return { error: 'State key not found' };
+            }
+            return state.value; // Return raw value
+          })
+          .post('/state/:instanceId', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const { key, value } = body;
+            const valueAsBuffer = Buffer.from(value);
+
+            await db.insert(schema.instanceState)
+              .values({ instanceId, key, value: valueAsBuffer })
+              .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value: valueAsBuffer }
+              });
+
+            set.status = 204;
+          }, {
+            body: t.Object({
+              key: t.String(),
+              value: t.String(),
+            })
+          })
+          .delete('/state/:instanceId/:key', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const result = await db.delete(schema.instanceState).where(and(
+              eq(schema.instanceState.instanceId, instanceId),
+              eq(schema.instanceState.key, params.key)
+            )).returning();
+
+            if (result.length === 0) {
+              set.status = 404;
+              return { error: 'State key not found' };
+            }
+
+            set.status = 204;
+          })
+          .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+            const [state] = await db.select({
+              value: schema.instanceState.value
+            }).from(schema.instanceState).where(and(
+              eq(schema.instanceState.instanceId, instanceId),
+              eq(schema.instanceState.key, 'session_snapshot')
+            ));
+
+            if (!state || !state.value) {
+              set.status = 404;
+              return { error: 'Snapshot not found' };
+            }
+            // The value is a buffer from the bytea column
+            set.headers['Content-Type'] = 'application/octet-stream';
+            return state.value;
+          })
+          .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+            const instanceId = parseInt(params.instanceId, 10);
+
+            // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+            const value = Buffer.from(body);
+
+            await db.insert(schema.instanceState)
+              .values({ instanceId: instanceId, key: 'session_snapshot', value })
+              .onConflictDoUpdate({
+                target: [schema.instanceState.instanceId, schema.instanceState.key],
+                set: { value }
+              });
+
+            set.status = 204;
+          }, { body: t.ArrayBuffer() })
+        )
+        // New admin API group for node management
+        .group('/admin', (app) => app
+          .onBeforeHandle(({ headers, set }) => {
+            const adminSecret = process.env.ADMIN_API_SECRET;
+            if (!adminSecret) {
+              console.error('ADMIN_API_SECRET is not set. Admin API is disabled.');
+              set.status = 503;
+              return { error: 'Service Unavailable' };
+            }
+            if (headers['x-admin-api-secret'] !== adminSecret) {
+              set.status = 401;
+              return { error: 'Unauthorized' };
+            }
+          })
+          .post('/nodes', async ({ body, set }) => {
+            const [newNode] = await db.insert(schema.nodes).values(body).returning();
+            if (!newNode) {
+              set.status = 500;
+              return { error: 'Failed to create node' };
+            }
+            return newNode;
+          }, {
+            body: t.Object({
+              name: t.String(),
+              dockerHost: t.String(),
+              publicHost: t.String(),
+            })
+          })
+          .get('/nodes', async () => {
+            return await db.select().from(schema.nodes);
+          })
+          .get('/nodes/:id', async ({ params, set }) => {
+            const [node] = await db.select().from(schema.nodes).where(eq(schema.nodes.id, params.id));
+            if (!node) {
+              set.status = 404;
+              return { error: 'Node not found' };
+            }
+            return node;
+          }, {
+            params: t.Object({ id: t.Numeric() })
+          })
+          .put('/nodes/:id', async ({ params, body, set }) => {
+            const [updatedNode] = await db.update(schema.nodes)
+              .set(body)
+              .where(eq(schema.nodes.id, params.id))
+              .returning();
+            if (!updatedNode) {
+              set.status = 404;
+              return { error: 'Node not found' };
+            }
+            return updatedNode;
+          }, {
+            params: t.Object({ id: t.Numeric() }),
+            body: t.Object({
+              name: t.Optional(t.String()),
+              dockerHost: t.Optional(t.String()),
+              publicHost: t.Optional(t.String()),
+            })
+          })
+          .delete('/nodes/:id', async ({ params, set }) => {
+            try {
+              const result = await db.delete(schema.nodes).where(eq(schema.nodes.id, params.id)).returning();
+              if (result.length === 0) {
+                set.status = 404;
+                return { error: 'Node not found' };
+              }
+              set.status = 204;
+            } catch (error: any) {
+              // Check for foreign key violation (Postgres error code 23503). Drizzle might wrap it.
+              if (error.code === '23503' || error?.cause?.code === '23503') {
+                set.status = 409;
+                return { error: 'Cannot delete node because it has instances assigned to it.' };
+              }
+              console.error('Failed to delete node:', error);
+              set.status = 500;
+              return { error: 'Internal server error' };
+            }
+          }, {
+            params: t.Object({ id: t.Numeric() })
+          })
+        );
+    }
+approved: true
+linesAdded: 27
+linesRemoved: 4
+linesDifference: 31
+gitCommittedAt: null
+status: committed
+id: 28

@@ -65,6 +65,10 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
             `PORT=8080`,
             `GOMAXPROCS=1`
         ],
+        // Expose port 8080 from the container, but only map it to the host during tests.
+        ExposedPorts: {
+            '8080/tcp': {},
+        },
         Labels: {
             'whatsapp-gateway-saas.instance-id': String(options.instanceId),
             // Traefik Labels for reverse proxying
@@ -82,6 +86,13 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
             Memory: parseMemory(options.memoryLimit),
             NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
             NetworkMode: process.env.NODE_ENV === 'test' ? 'bridge' : 'worker-net', // Use bridge network for tests
+            // Port mapping is only applied in the test environment for direct access.
+            // In production, Traefik handles routing via the docker network.
+            ...(process.env.NODE_ENV === 'test' && {
+                PortBindings: {
+                    '8080/tcp': [{ HostPort: String(30000 + options.instanceId) }],
+                }
+            })
         },
     });
 

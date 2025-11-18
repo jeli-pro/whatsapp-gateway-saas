@@ -36,7 +36,8 @@
       "relay.config.json",
       "user.prompt.md",
       "gateway/tsconfig.tsbuildinfo",
-      "drizzle/dist"
+      "drizzle/dist",
+      "drizzle/migrations"
     ]
   },
   "security": {

@@ -1,4 +1,20 @@
+
+I want the env setup to be as simple in singe setup in gateway. like inputing vps/s creds etc.
+
 ===
+
+I want more e2e and integration test cases to met readme.md requirements.
+
+rules;
+
+1. No OOP, only HOFs
+2. Use bun.sh and e2e type safe TypeScript
+3. No unknown or any type
+4. tests/[e2e|integration|unit]/[domain].test.ts files & dirs
+5. Use `bun test`. Write isolated, idempotent tests. Do not mock internal application logic. real.
+6. test should clean on every run with creator destroyer
+
+=== DONE
 
 I want DRY in tests/ dir because many redundant setup, also fix below fail
 

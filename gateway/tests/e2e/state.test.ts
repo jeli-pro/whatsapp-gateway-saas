@@ -14,7 +14,7 @@ describe('E2E - Internal State API', () => {
         const setupResult = await setup();
         serverUrl = setupResult.serverUrl;
         testUser = setupResult.user;
-        testNode = setupResult.node;
+        testNode = setupResult.nodes[0];
         appInstance = setupResult.app;
     });
 

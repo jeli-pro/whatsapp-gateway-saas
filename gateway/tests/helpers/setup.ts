@@ -3,7 +3,7 @@ import postgres, { type Sql } from 'postgres';
 import { getDockerClientForNode, type ContainerInfo } from '../../src/docker.client';
 import * as schema from '../../../drizzle/schema';
 import { createApp } from '../../src/app';
-import { testSetup } from '../utils/test-setup';
+import { ensureTestEnvironment, getEnvironment, cleanup as testCleanup } from '../utils/test-setup';
 
 // --- Types ---
 export type User = typeof schema.users.$inferSelect;
@@ -18,10 +18,14 @@ export let db: PostgresJsDatabase<typeof schema>;
 // --- Test Constants (initialized in setup) ---
 export let TEST_USER_API_KEY: string;
 export let TEST_INTERNAL_API_SECRET: string;
+export let TEST_ADMIN_API_SECRET: string;
 export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
-export const TEST_NODE_PUBLIC_HOST = 'localhost';
 
 const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
+
+interface SetupOptions {
+  nodeCount?: number;
+}
 
 
 /**
@@ -31,13 +35,15 @@ const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
  * 3. Cleans and seeds the database with a test user and a test node.
  * @returns An object with the server URL and the created user/node entities.
  */
-export const setup = async () => {
+export const setup = async (options: SetupOptions = {}) => {
+  const { nodeCount = 1 } = options;
   // Ensure the environment is ready. This is idempotent and safe to call.
-  await testSetup.ensureTestEnvironment();
+  await ensureTestEnvironment();
 
-  const env = testSetup.getEnvironment(); // This will now succeed.
+  const env = getEnvironment(); // This will now succeed.
   TEST_USER_API_KEY = env.API_SECRET;
   TEST_INTERNAL_API_SECRET = env.INTERNAL_API_SECRET;
+  TEST_ADMIN_API_SECRET = env.ADMIN_API_SECRET;
 
   // 1. Establish DB connection
   // Use the connection string from the now-initialized environment
@@ -52,6 +58,13 @@ export const setup = async () => {
   const app = createApp(db);
   await app.listen(0);
 
+  // Update GATEWAY_URL to match the actual port the gateway is running on
+  // Use 172.17.0.1 (Docker bridge gateway) for containers to reach the host on Linux
+  const actualPort = app.server?.port;
+  if (actualPort) {
+    process.env.GATEWAY_URL = `http://172.17.0.1:${actualPort}`;
+  }
+
   // 3. Clean database before seeding to ensure a fresh state.
   await db.delete(schema.instanceState);
   await db.delete(schema.instances);
@@ -63,16 +76,22 @@ export const setup = async () => {
     apiKey: TEST_USER_API_KEY,
   }).returning();
 
-  const [testNode] = await db.insert(schema.nodes).values({
-    name: 'test-node-1',
-    dockerHost: TEST_NODE_DOCKER_HOST,
-    publicHost: TEST_NODE_PUBLIC_HOST,
-  }).returning();
+  const testNodes: Node[] = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const [testNode] = await db.insert(schema.nodes).values({
+      name: `test-node-${i + 1}`,
+      dockerHost: TEST_NODE_DOCKER_HOST,
+      // In tests, the gateway connects to localhost with a mapped port.
+      // In production, this would be the actual public domain/IP.
+      publicHost: `localhost`,
+    }).returning();
+    testNodes.push(testNode);
+  }
 
   return {
     serverUrl: `http://localhost:${app.server?.port}`,
     user: testUser,
-    node: testNode,
+    nodes: testNodes,
     app, // Return app instance for teardown
   };
 };
@@ -89,7 +108,7 @@ export const teardown = async (app: any) => {
     await client.end({ timeout: 5 });
   }
   // Clean up the test environment (but not the database container)
-  await testSetup.cleanup();
+  await testCleanup();
 };
 
 /**

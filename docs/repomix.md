@@ -1,11 +1,6 @@
 # Directory Structure
 ```
 drizzle/
-  migrations/
-    meta/
-      _journal.json
-      0000_snapshot.json
-    0000_clever_sersi.sql
   package.json
   schema.ts
   tsconfig.json
@@ -18,7 +13,10 @@ gateway/
   tests/
     e2e/
       .gitkeep
+      instance-interaction.test.ts
       instances.test.ts
+      migration.test.ts
+      nodes.test.ts
       state.test.ts
     helpers/
       setup.ts
@@ -30,7 +28,6 @@ gateway/
     utils/
       test-setup.ts
     setup.ts
-  .env.test
   .eslintrc.cjs
   package.json
   tsconfig.json
@@ -55,1211 +52,318 @@ tsconfig.json
 
 # Files
 
-## File: drizzle/migrations/meta/_journal.json
-````json
-{
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1763431565049,
-      "tag": "0000_clever_sersi",
-      "breakpoints": true
-    }
-  ]
-}
-````
-
-## File: drizzle/migrations/meta/0000_snapshot.json
-````json
-{
-  "id": "c7655624-b80e-496f-96cf-92212a5cb27d",
-  "prevId": "00000000-0000-0000-0000-000000000000",
-  "version": "7",
-  "dialect": "postgresql",
-  "tables": {
-    "public.instance_state": {
-      "name": "instance_state",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "instance_id": {
-          "name": "instance_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "key": {
-          "name": "key",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "value": {
-          "name": "value",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "instance_state_instance_id_instances_id_fk": {
-          "name": "instance_state_instance_id_instances_id_fk",
-          "tableFrom": "instance_state",
-          "tableTo": "instances",
-          "columnsFrom": [
-            "instance_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "instance_key_idx": {
-          "name": "instance_key_idx",
-          "nullsNotDistinct": false,
-          "columns": [
-            "instance_id",
-            "key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.instances": {
-      "name": "instances",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "node_id": {
-          "name": "node_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "phone_number": {
-          "name": "phone_number",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "provider",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "webhook_url": {
-          "name": "webhook_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'creating'"
-        },
-        "cpu_limit": {
-          "name": "cpu_limit",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'0.5'"
-        },
-        "memory_limit": {
-          "name": "memory_limit",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'512m'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "user_phone_idx": {
-          "name": "user_phone_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "phone_number",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "instances_node_id_nodes_id_fk": {
-          "name": "instances_node_id_nodes_id_fk",
-          "tableFrom": "instances",
-          "tableTo": "nodes",
-          "columnsFrom": [
-            "node_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "instances_user_id_users_id_fk": {
-          "name": "instances_user_id_users_id_fk",
-          "tableFrom": "instances",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.nodes": {
-      "name": "nodes",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "docker_host": {
-          "name": "docker_host",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "public_host": {
-          "name": "public_host",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "nodes_name_unique": {
-          "name": "nodes_name_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "name"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.users": {
-      "name": "users",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "email": {
-          "name": "email",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "api_key": {
-          "name": "api_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "users_email_unique": {
-          "name": "users_email_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "email"
-          ]
-        },
-        "users_api_key_unique": {
-          "name": "users_api_key_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "api_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    }
-  },
-  "enums": {
-    "public.status": {
-      "name": "status",
-      "schema": "public",
-      "values": [
-        "creating",
-        "starting",
-        "running",
-        "stopped",
-        "error",
-        "migrating"
-      ]
-    },
-    "public.provider": {
-      "name": "provider",
-      "schema": "public",
-      "values": [
-        "whatsmeow",
-        "baileys",
-        "wawebjs",
-        "waba"
-      ]
-    }
-  },
-  "schemas": {},
-  "sequences": {},
-  "roles": {},
-  "policies": {},
-  "views": {},
-  "_meta": {
-    "columns": {},
-    "schemas": {},
-    "tables": {}
-  }
-}
-````
-
-## File: drizzle/migrations/0000_clever_sersi.sql
-````sql
-CREATE TYPE "public"."status" AS ENUM('creating', 'starting', 'running', 'stopped', 'error', 'migrating');--> statement-breakpoint
-CREATE TYPE "public"."provider" AS ENUM('whatsmeow', 'baileys', 'wawebjs', 'waba');--> statement-breakpoint
-CREATE TABLE "instance_state" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"instance_id" integer NOT NULL,
-	"key" varchar(255) NOT NULL,
-	"value" "bytea" NOT NULL,
-	CONSTRAINT "instance_key_idx" UNIQUE("instance_id","key")
-);
---> statement-breakpoint
-CREATE TABLE "instances" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"node_id" integer NOT NULL,
-	"user_id" integer NOT NULL,
-	"name" varchar(256),
-	"phone_number" varchar(20) NOT NULL,
-	"provider" "provider" NOT NULL,
-	"webhook_url" text,
-	"status" "status" DEFAULT 'creating' NOT NULL,
-	"cpu_limit" varchar(10) DEFAULT '0.5',
-	"memory_limit" varchar(10) DEFAULT '512m',
-	"created_at" timestamp DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "nodes" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"name" varchar(256) NOT NULL,
-	"docker_host" text NOT NULL,
-	"public_host" text NOT NULL,
-	CONSTRAINT "nodes_name_unique" UNIQUE("name")
-);
---> statement-breakpoint
-CREATE TABLE "users" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"email" varchar(256) NOT NULL,
-	"api_key" text NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "users_email_unique" UNIQUE("email"),
-	CONSTRAINT "users_api_key_unique" UNIQUE("api_key")
-);
---> statement-breakpoint
-ALTER TABLE "instance_state" ADD CONSTRAINT "instance_state_instance_id_instances_id_fk" FOREIGN KEY ("instance_id") REFERENCES "public"."instances"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "instances" ADD CONSTRAINT "instances_node_id_nodes_id_fk" FOREIGN KEY ("node_id") REFERENCES "public"."nodes"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "instances" ADD CONSTRAINT "instances_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "user_phone_idx" ON "instances" USING btree ("user_id","phone_number");
-````
-
-## File: gateway/src/app.ts
+## File: gateway/tests/e2e/instance-interaction.test.ts
 ````typescript
-import { Elysia, t } from 'elysia';
-import { eq, and, not } from 'drizzle-orm';
-import * as schema from '../../drizzle/schema';
-import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode } from './docker.service';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, cleanupContainers, TEST_USER_API_KEY, findContainerByInstanceId, type User, type Node } from '../helpers/setup';
 
-/**
- * Creates the Elysia app instance with all routes configured.
- * Database connection is injected to avoid circular dependencies in tests.
- */
-export function createApp(db: any) {
-  // A simple proxy to fetch data from an instance via its public URL
-  async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
-      try {
-          const response = await fetch(instanceUrl, options);
-          return response;
-      } catch (e) {
-          console.error(`Failed to proxy request to ${instanceUrl}`, e);
-          return null;
-      }
-  }
+describe('E2E - Instance Interaction API', () => {
+    let serverUrl: string;
+    let appInstance: any;
+    let testUser: User;
+    let testNode: Node;
 
-  return new Elysia()
-    .get('/', () => ({ status: 'ok' }))
-    .group('/api', (app) => app
-      // Resolve user from API Key
-      .resolve(async ({ headers }) => {
-          const auth = headers['authorization'];
-          if (!auth || !auth.startsWith('Bearer ')) {
-              return { user: null };
-          }
-          const apiKey = auth.substring(7);
-          if (!apiKey) {
-              return { user: null };
-          }
-          const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+    beforeAll(async () => {
+        const setupResult = await setup();
+        serverUrl = setupResult.serverUrl;
+        appInstance = setupResult.app;
+        testUser = setupResult.user;
+        testNode = setupResult.nodes[0];
+    });
 
-          return { user: user || null };
-      })
-      // Simple bearer token auth
-      .onBeforeHandle(({ user, set }) => {
-          if (!user) {
-              set.status = 401;
-              return { error: 'Unauthorized' };
-          }
-      })
-      .post('/instances', async ({ body, set, user }) => {
-          // Select a node for the new instance. Simple round-robin or first-available logic.
-          // For now, just pick the first one.
-          const [node] = await db.select().from(schema.nodes).limit(1);
-          if (!node) {
-              set.status = 503;
-              return { error: 'No available worker nodes to schedule instance.' };
-          }
+    afterAll(async () => {
+        await cleanupContainers();
+        if (appInstance) {
+            await teardown(appInstance);
+        }
+    });
 
-          // user is guaranteed to be non-null by the onBeforeHandle guard.
-          const [newInstance] = await db.insert(schema.instances).values({
-              nodeId: node.id,
-              userId: user!.id,
-              name: body.name,
-              phoneNumber: body.phone,
-              provider: body.provider,
-              webhookUrl: body.webhook,
-              cpuLimit: body.resources?.cpu,
-              memoryLimit: body.resources?.memory,
-              status: 'creating',
-          }).returning();
+    afterEach(async () => {
+        await cleanupContainers();
+        await cleanupDb();
+    });
 
-          if (!newInstance) {
-              set.status = 500;
-              return { error: 'Failed to create instance in database' };
-          }
+    test('should get a QR code for a new instance', async () => {
+        // Create instance
+        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TEST_USER_API_KEY}` },
+            body: JSON.stringify({ provider: "whatsmeow", phone: "111222333" }),
+        });
+        expect(createResponse.status).toBe(200);
+        const instance = await createResponse.json() as { id: number };
 
-          try {
-              await createAndStartContainer({
-                  instanceId: newInstance.id,
-                  node: node,
-                  name: newInstance.name,
-                  webhookUrl: newInstance.webhookUrl || '',
-                  cpuLimit: newInstance.cpuLimit || '0.5',
-                  memoryLimit: newInstance.memoryLimit || '512m',
-                  provider: newInstance.provider,
-              });
-              const [updatedInstance] = await db.update(schema.instances)
-                  .set({ status: 'running' })
-                  .where(eq(schema.instances.id, newInstance.id))
-                  .returning();
-              return updatedInstance;
-          } catch (error) {
-              console.error('Failed to start container:', error);
-              await db.update(schema.instances)
-                  .set({ status: 'error' })
-                  .where(eq(schema.instances.id, newInstance.id));
-              set.status = 500;
-              return { error: 'Failed to start container for instance' };
-          }
-      }, {
-          body: t.Object({
-              name: t.Optional(t.String()),
-              phone: t.String(),
-              provider: t.Union([
-                  t.Literal('whatsmeow'),
-                  t.Literal('baileys'),
-                  t.Literal('wawebjs'),
-                  t.Literal('waba')
-              ]),
-              webhook: t.Optional(t.String()),
-              resources: t.Optional(t.Object({
-                  cpu: t.String(),
-                  memory: t.String(),
-              }))
-          })
-      })
-      .get('/instances/:id/qr', async ({ params, set, user }) => {
-          const instanceId = parseInt(params.id, 10);
+        // Wait for container to be ready and generate QR
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
-          // Ownership check and fetch instance with its node
-          const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        // Get QR code
+        const qrResponse = await fetch(`${serverUrl}/api/instances/${instance.id}/qr`, {
+            headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
+        });
 
-          if (!instanceData || !instanceData.instances) {
-              set.status = 404;
-              return { error: 'Instance not found' };
-          }
-          if (!instanceData.nodes) {
-              set.status = 500;
-              return { error: 'Instance is not associated with a node.' };
-          }
+        expect(qrResponse.status).toBe(200);
+        expect(qrResponse.headers.get('content-type')).toBe('image/png');
+        const qrBlob = await qrResponse.blob();
+        expect(qrBlob.size).toBeGreaterThan(0);
+    }, 15000);
 
-          const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
-          const qrResponse = await proxyToInstance(instanceUrl);
-          if (!qrResponse) {
-              set.status = 503;
-              return { error: "Failed to connect to instance container." };
-          }
-          if (!qrResponse.ok) {
-              set.status = qrResponse.status;
-              return qrResponse.body;
-          }
+    test('should fail to send a message from an unpaired instance', async () => {
+        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TEST_USER_API_KEY}` },
+            body: JSON.stringify({ provider: "whatsmeow", phone: "444555666" }),
+        });
+        expect(createResponse.status).toBe(200);
+        const instance = await createResponse.json() as { id: number };
+        
+        await new Promise(resolve => setTimeout(resolve, 3000)); // wait for container start
 
-          // The whatsmeow provider returns a PNG. We need to proxy that correctly.
-          set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
-          return qrResponse.blob();
-      })
-      .post('/instances/:id/send', async ({ params, body, set, user }) => {
-          const instanceId = parseInt(params.id, 10);
-
-          // Ownership check
-          const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
-          if (!instanceData || !instanceData.instances) {
-              set.status = 404;
-              return { error: 'Instance not found' };
-          }
-          if (!instanceData.nodes) {
-              set.status = 500;
-              return { error: 'Instance is not associated with a node.' };
-          }
-
-          const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
-
-          const sendResponse = await proxyToInstance(instanceUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body)
-          });
-
-          if (!sendResponse) {
-              set.status = 503;
-              return { error: "Failed to connect to instance container." };
-          }
-          set.status = sendResponse.status;
-          return await sendResponse.json();
-      }, {
-          body: t.Object({
-              to: t.String(),
-              text: t.String(),
-          })
-      })
-      .delete('/instances/:id', async ({ params, set, user }) => {
-          const instanceId = parseInt(params.id, 10);
-
-          // Ownership check
-          const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
-          if (!instanceData || !instanceData.instances) {
-              set.status = 404;
-              return { error: 'Instance not found' };
-          }
-          if (!instanceData.nodes) {
-              // Instance exists but node doesn't. Clean up DB record.
-              await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
-              return { message: 'Instance found without a node. Record cleaned up.' };
-          }
-
-          try {
-              await stopAndRemoveContainer(instanceId, instanceData.nodes);
-              await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
-              set.status = 204;
-          } catch (error) {
-              console.error('Failed to delete instance:', error);
-              set.status = 500;
-              return { error: 'Failed to delete instance' };
-          }
-      })
-      .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
-          // The `target_node` from the README is ignored in this single-node implementation.
-          const instanceId = parseInt(params.id, 10);
-
-          // 1. Ownership check
-          const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
-          if (!instanceData || !instanceData.instances || !instanceData.nodes) {
-              set.status = 404;
-              return { error: 'Instance not found or you do not have permission to access it' };
-          }
-
-          const instance = instanceData.instances;
-          const currentNode = instanceData.nodes;
-
-          // Find a new node to migrate to
-          const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
-          if (!newNode) {
-              set.status = 503;
-              return { error: 'No available node to migrate to.' };
-          }
-
-          console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
-
-          try {
-              // 2. Set status to 'migrating'
-              await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
-
-              // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
-              await stopAndRemoveContainer(instanceId, currentNode);
-              console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
-
-              // 4. Create and start a new container. The provider will fetch the snapshot on startup.
-              await createAndStartContainer({
-                  instanceId: instance.id,
-                  node: newNode,
-                  name: instance.name,
-                  webhookUrl: instance.webhookUrl || '',
-                  cpuLimit: instance.cpuLimit || '0.5',
-                  memoryLimit: instance.memoryLimit || '512m',
-                  provider: instance.provider,
-              });
-              console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
-
-              // 5. Set status back to 'running'
-              const [updatedInstance] = await db.update(schema.instances).set({
-                  status: 'running',
-                  nodeId: newNode.id,
-              })
-                  .where(eq(schema.instances.id, instanceId))
-                  .returning();
-
-              console.log(`Migration for instance ${instanceId} completed successfully.`);
-              return { status: 'ok', instance: updatedInstance };
-          } catch (error) {
-              console.error(`Migration failed for instance ${instanceId}:`, error);
-              await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
-              set.status = 500;
-              return { error: 'Migration failed' };
-          }
-      }, {
-          body: t.Object({
-              target_node: t.Optional(t.String()),
-          })
-      })
-    )
-    // New internal API group for state management
-    .group('/internal', (app) => app
-      .onBeforeHandle(({ headers, set }) => {
-          const internalSecret = process.env.INTERNAL_API_SECRET;
-          if (!internalSecret) {
-              console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
-              set.status = 503;
-              return { error: 'Service Unavailable' };
-          }
-          if (headers['x-internal-secret'] !== internalSecret) {
-              set.status = 401;
-              return { error: 'Unauthorized' };
-          }
-      })
-      .get('/state/:instanceId', async ({ params }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-          const states = await db.select({
-              key: schema.instanceState.key,
-              value: schema.instanceState.value
-          }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
-
-          return states;
-      })
-      .get('/state/:instanceId/:key', async ({ params, set }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-          const [state] = await db.select({
-              value: schema.instanceState.value
-          }).from(schema.instanceState).where(and(
-              eq(schema.instanceState.instanceId, instanceId),
-              eq(schema.instanceState.key, params.key)
-          ));
-
-          if (!state) {
-              set.status = 404;
-              return { error: 'State key not found' };
-          }
-          return state.value; // Return raw value
-      })
-      .post('/state/:instanceId', async ({ params, body, set }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-          const { key, value } = body;
-          const valueAsBuffer = Buffer.from(value);
-
-          await db.insert(schema.instanceState)
-              .values({ instanceId, key, value: valueAsBuffer })
-              .onConflictDoUpdate({
-                  target: [schema.instanceState.instanceId, schema.instanceState.key],
-                  set: { value: valueAsBuffer }
-              });
-
-          set.status = 204;
-      }, {
-          body: t.Object({
-              key: t.String(),
-              value: t.String(),
-          })
-      })
-      .delete('/state/:instanceId/:key', async ({ params, set }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-          const result = await db.delete(schema.instanceState).where(and(
-              eq(schema.instanceState.instanceId, instanceId),
-              eq(schema.instanceState.key, params.key)
-          )).returning();
-
-          if (result.length === 0) {
-              set.status = 404;
-              return { error: 'State key not found' };
-          }
-
-          set.status = 204;
-      })
-      .get('/state/:instanceId/snapshot', async ({ params, set }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-          const [state] = await db.select({
-              value: schema.instanceState.value
-          }).from(schema.instanceState).where(and(
-              eq(schema.instanceState.instanceId, instanceId),
-              eq(schema.instanceState.key, 'session_snapshot')
-          ));
-
-          if (!state || !state.value) {
-              set.status = 404;
-              return { error: 'Snapshot not found' };
-          }
-          // The value is a buffer from the bytea column
-          set.headers['Content-Type'] = 'application/octet-stream';
-          return state.value;
-      })
-      .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
-          const instanceId = parseInt(params.instanceId, 10);
-
-          // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
-          const value = Buffer.from(body);
-
-          await db.insert(schema.instanceState)
-              .values({ instanceId: instanceId, key: 'session_snapshot', value })
-              .onConflictDoUpdate({
-                  target: [schema.instanceState.instanceId, schema.instanceState.key],
-                  set: { value }
-              });
-
-          set.status = 204;
-      }, { body: t.ArrayBuffer() })
-    );
-}
+        const sendResponse = await fetch(`${serverUrl}/api/instances/${instance.id}/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TEST_USER_API_KEY}` },
+            body: JSON.stringify({ to: '12345', text: 'hello' }),
+        });
+        
+        // whatsmeow returns 503 if not connected. The gateway proxies this.
+        expect(sendResponse.status).toBe(503); 
+        const body = await sendResponse.json() as { error: string };
+        expect(body.error).toBe("Client not connected");
+    }, 15000);
+});
 ````
 
-## File: gateway/tests/utils/test-setup.ts
+## File: gateway/tests/e2e/migration.test.ts
 ````typescript
-import { spawn } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres, { type Sql } from 'postgres';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, cleanupContainers, TEST_USER_API_KEY, findContainerByInstanceId, type User, type Node, type Instance } from '../helpers/setup';
 import * as schema from '../../../drizzle/schema';
-import { promises as fs } from 'fs';
+import { eq } from 'drizzle-orm';
 
-export interface TestEnvironment {
-  DATABASE_URL: string;
-  INTERNAL_API_SECRET: string;
-  API_SECRET: string;
-  GATEWAY_URL: string;
-  NODE_ENV: string;
-}
+describe('E2E - Instance Migration API', () => {
+    let serverUrl: string;
+    let appInstance: any;
+    let testUser: User;
+    let nodes: Node[];
 
-export class TestSetup {
-  private static instance: TestSetup;
-  private dbConnection: Sql | null = null;
-  private db: any = null;
-  private envFileCreated = false;
-  private migrationsRun = false;
+    beforeAll(async () => {
+        const setupResult = await setup({ nodeCount: 2 });
+        serverUrl = setupResult.serverUrl;
+        appInstance = setupResult.app;
+        testUser = setupResult.user;
+        nodes = setupResult.nodes;
+    }, 30000);
 
-  private constructor() {}
-
-  public static getInstance(): TestSetup {
-    if (!TestSetup.instance) {
-      TestSetup.instance = new TestSetup();
-    }
-    return TestSetup.instance;
-  }
-
-  /**
-   * Ensures the test environment is properly set up
-   */
-  public async ensureTestEnvironment(): Promise<TestEnvironment> {
-    console.log('🔧 Setting up test environment...');
-
-    // Set up environment variables
-    const env = await this.setupEnvironment();
-
-    // Start test database if needed
-    await this.ensureTestDatabase();
-
-    // Set up database schema
-    await this.ensureDatabaseSchema();
-
-    console.log('✅ Test environment ready');
-    return env;
-  }
-
-  /**
-   * Sets up the test environment variables
-   */
-  private async setupEnvironment(): Promise<TestEnvironment> {
-    const env: TestEnvironment = {
-      DATABASE_URL: 'postgresql://test_user:test_password@localhost:5433/test_db',
-      INTERNAL_API_SECRET: 'test-internal-secret-for-ci',
-      API_SECRET: 'test-api-key-secret-for-ci',
-      GATEWAY_URL: 'http://localhost:3000',
-      NODE_ENV: 'test'
-    };
-
-    // Set environment variables
-    Object.entries(env).forEach(([key, value]) => {
-      process.env[key] = value;
-    });
-
-    // Create .env.test file if it doesn't exist
-    const gatewayDir = join(process.cwd());
-    const envTestPath = join(gatewayDir, '.env.test');
-
-    if (!existsSync(envTestPath)) {
-      const envContent = Object.entries(env)
-        .map(([key, value]) => `${key}=${value}`)
-        .join('\n');
-
-      await fs.writeFile(envTestPath, envContent);
-      this.envFileCreated = true;
-      console.log('📝 Created .env.test file');
-    }
-
-    return env;
-  }
-
-  /**
-   * Ensures test database is running and accessible
-   */
-  private async ensureTestDatabase(): Promise<void> {
-    console.log('🗄️  Checking test database...');
-
-    try {
-      // Try to connect to the database
-      const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
-      await client`SELECT 1`;
-      await client.end();
-      console.log('✅ Test database is accessible');
-      return;
-    } catch (error) {
-      console.log('⚠️  Test database not accessible, starting it...');
-      await this.startTestDatabase();
-    }
-  }
-
-  /**
-   * Starts the test database using Docker
-   */
-  private async startTestDatabase(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      console.log('🐳 Starting test database container...');
-
-      // Stop existing container if it exists
-      const stopCmd = spawn('docker', [
-        'stop', 'whatsapp-gateway-saas-test-db'
-      ], { stdio: 'pipe' });
-
-      stopCmd.on('close', () => {
-        const rmCmd = spawn('docker', [
-          'rm', 'whatsapp-gateway-saas-test-db'
-        ], { stdio: 'pipe' });
-
-        rmCmd.on('close', () => {
-          const runCmd = spawn('docker', [
-            'run', '-d',
-            '--name', 'whatsapp-gateway-saas-test-db',
-            '-e', 'POSTGRES_USER=test_user',
-            '-e', 'POSTGRES_PASSWORD=test_password',
-            '-e', 'POSTGRES_DB=test_db',
-            '-p', '5433:5432',
-            '--restart', 'unless-stopped',
-            'postgres:16-alpine'
-          ], { stdio: 'pipe' });
-
-          runCmd.on('close', (code) => {
-            if (code === 0) {
-              console.log('✅ Test database container started');
-              this.waitForDatabase().then(resolve).catch(reject);
-            } else {
-              reject(new Error('Failed to start test database container'));
-            }
-          });
-
-          runCmd.on('error', reject);
-        });
-
-        rmCmd.on('error', (error) => {
-          // Container might not exist, which is fine
-          console.log('ℹ️  No existing container to remove');
-          const runCmd = spawn('docker', [
-            'run', '-d',
-            '--name', 'whatsapp-gateway-saas-test-db',
-            '-e', 'POSTGRES_USER=test_user',
-            '-e', 'POSTGRES_PASSWORD=test_password',
-            '-e', 'POSTGRES_DB=test_db',
-            '-p', '5433:5432',
-            '--restart', 'unless-stopped',
-            'postgres:16-alpine'
-          ], { stdio: 'pipe' });
-
-          runCmd.on('close', (code) => {
-            if (code === 0) {
-              console.log('✅ Test database container started');
-              this.waitForDatabase().then(resolve).catch(reject);
-            } else {
-              reject(new Error('Failed to start test database container'));
-            }
-          });
-
-          runCmd.on('error', reject);
-        });
-      });
-
-      stopCmd.on('error', (error) => {
-        // Container might not exist, which is fine
-        console.log('ℹ️  No existing container to stop');
-      });
-    });
-  }
-
-  /**
-   * Waits for the database to be ready
-   */
-  private async waitForDatabase(): Promise<void> {
-    console.log('⏳ Waiting for database to be ready...');
-
-    for (let i = 0; i < 30; i++) {
-      try {
-        const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
-        await client`SELECT 1`;
-        await client.end();
-        console.log('✅ Database is ready');
-        return;
-      } catch (error) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-
-    throw new Error('Database failed to become ready within 30 seconds');
-  }
-
-  /**
-   * Ensures the database schema is set up
-   */
-  private async ensureDatabaseSchema(): Promise<void> {
-    if (this.migrationsRun) {
-      return;
-    }
-
-    console.log('🗃️  Setting up database schema...');
-
-    try {
-      // Try to connect and check if tables exist
-      await this.connectToDatabase();
-
-      // Check if tables exist by trying to query one of them
-      try {
-        await this.db.query.users.findFirst();
-        console.log('✅ Database schema already exists');
-        this.migrationsRun = true;
-        return;
-      } catch (error) {
-        // Tables don't exist, need to run migrations
-        console.log('🔄 Database schema needs to be created');
-      }
-
-      // Run migrations
-      await this.runMigrations();
-      this.migrationsRun = true;
-      console.log('✅ Database schema created successfully');
-
-    } catch (error) {
-      console.error('❌ Failed to set up database schema:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Connects to the database
-   */
-  private async connectToDatabase(): Promise<void> {
-    if (this.dbConnection) {
-      return;
-    }
-
-    this.dbConnection = postgres(process.env.DATABASE_URL!);
-    this.db = drizzle(this.dbConnection, { schema });
-  }
-
-  /**
-   * Runs database migrations
-   */
-  private async runMigrations(): Promise<void> {
-    console.log('📦 Running database migrations...');
-
-    return new Promise((resolve, reject) => {
-      const { spawn } = require('child_process');
-
-      // First, generate migrations if they don't exist
-      const generateCmd = spawn('npx', ['drizzle-kit', 'generate'], {
-        cwd: join(process.cwd(), '..'),
-        stdio: 'pipe'
-      });
-
-      generateCmd.on('close', (code) => {
-        if (code === 0) {
-          console.log('✅ Migrations generated');
-
-          // Then run the migrations
-          const migrateCmd = spawn('npx', ['drizzle-kit', 'migrate'], {
-            cwd: join(process.cwd(), '..'),
-            stdio: 'pipe'
-          });
-
-          migrateCmd.on('close', (code) => {
-            if (code === 0) {
-              console.log('✅ Migrations applied successfully');
-              resolve();
-            } else {
-              reject(new Error('Migration failed'));
-            }
-          });
-
-          migrateCmd.on('error', reject);
-        } else {
-          reject(new Error('Migration generation failed'));
+    afterAll(async () => {
+        await cleanupContainers();
+        if (appInstance) {
+            await teardown(appInstance);
         }
-      });
-
-      generateCmd.on('error', reject);
     });
-  }
 
-  /**
-   * Gets the database connection for tests
-   */
-  public async getDb() {
-    if (!this.db) {
-      await this.connectToDatabase();
-    }
-    return this.db;
-  }
+    afterEach(async () => {
+        await cleanupContainers();
+        await cleanupDb();
+    });
 
-  /**
-   * Cleans up the test environment
-   */
-  public async cleanup(): Promise<void> {
-    console.log('🧹 Cleaning up test environment...');
+    test('should migrate an instance from one node to another', async () => {
+        expect(nodes.length).toBe(2);
+        const [node1, node2] = nodes;
 
-    if (this.dbConnection) {
-      try {
-        await this.dbConnection.end({ timeout: 5 });
-        this.dbConnection = null;
-        this.db = null;
-      } catch (error) {
-        console.warn('⚠️  Failed to close database connection:', error);
-      }
-    }
-
-    if (this.envFileCreated) {
-      try {
-        const gatewayDir = join(process.cwd());
-        const envTestPath = join(gatewayDir, '.env.test');
-        await fs.unlink(envTestPath);
-        console.log('🗑️  Removed .env.test file');
-        this.envFileCreated = false; // Reset for next test run
-      } catch (error) {
-        console.warn('⚠️  Failed to remove .env.test file:', error);
-      }
-    }
-
-    // Only clean up database container if explicitly requested or no other tests are running
-    // This prevents cleanup conflicts when multiple test files are running
-  }
-
-  /**
-   * Force cleanup of database container (for explicit cleanup only)
-   */
-  public async forceCleanup(): Promise<void> {
-    console.log('🧹 Force cleaning up test environment...');
-
-    if (this.dbConnection) {
-      try {
-        await this.dbConnection.end({ timeout: 5 });
-        this.dbConnection = null;
-        this.db = null;
-      } catch (error) {
-        console.warn('⚠️  Failed to close database connection:', error);
-      }
-    }
-
-    if (this.envFileCreated) {
-      try {
-        const gatewayDir = join(process.cwd());
-        const envTestPath = join(gatewayDir, '.env.test');
-        await fs.unlink(envTestPath);
-        console.log('🗑️  Removed .env.test file');
-      } catch (error) {
-        console.warn('⚠️  Failed to remove .env.test file:', error);
-      }
-    }
-
-    // Stop test database container
-    try {
-      const { spawn } = require('child_process');
-      const stopCmd = spawn('docker', ['stop', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
-
-      stopCmd.on('close', () => {
-        const rmCmd = spawn('docker', ['rm', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
-        rmCmd.on('close', () => {
-          console.log('✅ Test database container stopped and removed');
+        // 1. Create an instance. It should be scheduled on the first available node (node1).
+        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TEST_USER_API_KEY}` },
+            body: JSON.stringify({ provider: "whatsmeow", phone: "mig-test-123" }),
         });
-      });
-    } catch (error) {
-      console.warn('⚠️  Failed to clean up test database container:', error);
-    }
-  }
-}
+        expect(createResponse.status).toBe(200);
+        const instance = await createResponse.json() as { id: number; nodeId: number };
+        const instanceId = instance.id;
 
-// Export singleton instance
-export const testSetup = TestSetup.getInstance();
+        // 2. Verify it's on node1 in the DB and a container is running.
+        let dbInstance = await db.query.instances.findFirst({ where: eq(schema.instances.id, instanceId) });
+        expect(dbInstance).toBeDefined();
+        expect(dbInstance?.nodeId).toBe(node1.id);
+        
+        const containerBefore = await findContainerByInstanceId(instanceId);
+        expect(containerBefore).toBeDefined();
+        expect(containerBefore?.State).toBe('running');
+
+        // 3. Trigger migration.
+        const migrateResponse = await fetch(`${serverUrl}/api/instances/${instanceId}/migrate`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_node: 'any' })
+        });
+        expect(migrateResponse.status).toBe(200);
+        const migrateResult = await migrateResponse.json() as { status: string; instance: Instance };
+        expect(migrateResult.status).toBe('ok');
+        expect(migrateResult.instance.nodeId).toBe(node2.id);
+
+        // 4. Verify it's now on node2 in the DB.
+        dbInstance = await db.query.instances.findFirst({ where: eq(schema.instances.id, instanceId) });
+        expect(dbInstance).toBeDefined();
+        expect(dbInstance?.nodeId).toBe(node2.id);
+
+        // 5. Verify a new container is running.
+        const containerAfter = await findContainerByInstanceId(instanceId);
+        expect(containerAfter).toBeDefined();
+        expect(containerAfter?.State).toBe('running');
+        expect(containerAfter?.Id).not.toBe(containerBefore?.Id); // Should be a new container
+
+    }, 30000); // Migration can take time (stop, pull, start)
+});
 ````
 
-## File: gateway/tests/setup.ts
+## File: gateway/tests/e2e/nodes.test.ts
 ````typescript
-import { testSetup } from './utils/test-setup';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, createTestInstance, TEST_ADMIN_API_SECRET, type User, type Node } from '../helpers/setup';
+import * as schema from '../../../drizzle/schema';
+import { eq, ne } from 'drizzle-orm';
 
-// Global setup for all tests
-beforeAll(async () => {
-  console.log('🚀 Setting up global test environment...');
-  await testSetup.ensureTestEnvironment();
-}, 60000);
+describe('E2E - Admin Node Management API', () => {
+    let serverUrl: string;
+    let appInstance: any;
+    let testUser: User;
+    let initialNode: Node;
 
-// Global cleanup after all tests
-afterAll(async () => {
-  console.log('🧹 Cleaning up global test environment...');
-  await testSetup.cleanup();
-}, 30000);
+    beforeAll(async () => {
+        const setupResult = await setup(); // Sets up 1 initial node
+        serverUrl = setupResult.serverUrl;
+        appInstance = setupResult.app;
+        testUser = setupResult.user;
+        initialNode = setupResult.nodes[0];
+    });
 
-// Handle unhandled promise rejections in tests
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    afterAll(async () => {
+        if (appInstance) {
+            await teardown(appInstance);
+        }
+    });
+
+    afterEach(async () => {
+        // Clean up any instances created during tests
+        await cleanupDb();
+        
+        // Clean up any nodes created during tests, leaving the initial one
+        await db.delete(schema.nodes).where(ne(schema.nodes.id, initialNode.id));
+    });
+
+    test('should reject access without the admin secret', async () => {
+        const res = await fetch(`${serverUrl}/admin/nodes`);
+        expect(res.status).toBe(401);
+
+        const postRes = await fetch(`${serverUrl}/admin/nodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'node-x', dockerHost: 'host', publicHost: 'public' })
+        });
+        expect(postRes.status).toBe(401);
+    });
+
+    test('should create, list, get, update, and delete a node', async () => {
+        const newNodeData = {
+            name: 'test-node-2',
+            dockerHost: 'unix:///var/run/docker.sock',
+            publicHost: 'test-node-2.local'
+        };
+
+        // 1. Create Node
+        const createResponse = await fetch(`${serverUrl}/admin/nodes`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-API-Secret': TEST_ADMIN_API_SECRET
+            },
+            body: JSON.stringify(newNodeData)
+        });
+        expect(createResponse.status).toBe(200);
+        const createdNode = await createResponse.json() as Node;
+        expect(createdNode.id).toBeTypeOf('number');
+        expect(createdNode.name).toBe(newNodeData.name);
+
+        const nodeId = createdNode.id;
+
+        // 2. List Nodes
+        const listResponse = await fetch(`${serverUrl}/admin/nodes`, {
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        expect(listResponse.status).toBe(200);
+        const nodes = await listResponse.json() as Node[];
+        expect(nodes.length).toBe(2); // Initial node + new node
+        expect(nodes.find(n => n.id === nodeId)).toBeDefined();
+
+        // 3. Get Node by ID
+        const getResponse = await fetch(`${serverUrl}/admin/nodes/${nodeId}`, {
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        expect(getResponse.status).toBe(200);
+        const fetchedNode = await getResponse.json() as Node;
+        expect(fetchedNode.id).toBe(nodeId);
+        expect(fetchedNode.name).toBe(newNodeData.name);
+
+        // 4. Update Node
+        const updatedName = 'test-node-2-updated';
+        const updateResponse = await fetch(`${serverUrl}/admin/nodes/${nodeId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-API-Secret': TEST_ADMIN_API_SECRET
+            },
+            body: JSON.stringify({ name: updatedName })
+        });
+        expect(updateResponse.status).toBe(200);
+        const updatedNode = await updateResponse.json() as Node;
+        expect(updatedNode.name).toBe(updatedName);
+
+        // 5. Delete Node
+        const deleteResponse = await fetch(`${serverUrl}/admin/nodes/${nodeId}`, {
+            method: 'DELETE',
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        expect(deleteResponse.status).toBe(204);
+
+        // 6. Verify Deletion
+        const getAfterDeleteResponse = await fetch(`${serverUrl}/admin/nodes/${nodeId}`, {
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        expect(getAfterDeleteResponse.status).toBe(404);
+    });
+
+    test('should return 409 Conflict when deleting a node with active instances', async () => {
+        // The initialNode from setup is our target
+        const nodeToDelete = initialNode;
+
+        // 1. Create an instance assigned to this node
+        const testInstance = await createTestInstance(db, testUser, nodeToDelete);
+        expect(testInstance.nodeId).toBe(nodeToDelete.id);
+
+        // 2. Attempt to delete the node
+        const deleteResponse = await fetch(`${serverUrl}/admin/nodes/${nodeToDelete.id}`, {
+            method: 'DELETE',
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        
+        // 3. Assert a 409 Conflict response
+        expect(deleteResponse.status).toBe(409);
+        const errorBody = await deleteResponse.json() as { error: string };
+        expect(errorBody.error).toBe('Cannot delete node because it has instances assigned to it.');
+
+        // 4. Verify the node still exists in the database
+        const getNodeResponse = await fetch(`${serverUrl}/admin/nodes/${nodeToDelete.id}`, {
+            headers: { 'X-Admin-API-Secret': TEST_ADMIN_API_SECRET }
+        });
+        expect(getNodeResponse.status).toBe(200);
+    });
 });
-
-// Handle uncaught exceptions in tests
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  process.exit(1);
-});
-````
-
-## File: gateway/.env.test
-````
-DATABASE_URL=postgresql://test_user:test_password@localhost:5433/test_db
-INTERNAL_API_SECRET=test-internal-secret-for-ci
-API_SECRET=test-api-key-secret-for-ci
-GATEWAY_URL=http://localhost:3000
-NODE_ENV=test
 ````
 
 ## File: .env.test
 ````
 DATABASE_URL="postgresql://test_user:test_password@localhost:5433/test_db"
-API_SECRET="your-super-secret-api-key"
-INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+API_SECRET="test-api-key-secret-for-ci"
+INTERNAL_API_SECRET="test-internal-secret-for-ci"
+ADMIN_API_SECRET="test-admin-secret-for-ci"
 GATEWAY_URL="http://host.docker.internal:3000"
 ````
 
@@ -1284,6 +388,470 @@ GATEWAY_URL="http://host.docker.internal:3000"
     "noEmit": false
   },
   "include": ["schema.ts"]
+}
+````
+
+## File: gateway/src/app.ts
+````typescript
+import { Elysia, t } from 'elysia';
+import { eq, and, not } from 'drizzle-orm';
+import * as schema from '../../drizzle/schema';
+import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode } from './docker.service';
+
+/**
+ * Creates the Elysia app instance with all routes configured.
+ * Database connection is injected to avoid circular dependencies in tests.
+ */
+export function createApp(db: any) {
+  // A simple proxy to fetch data from an instance via its public URL
+  async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
+    try {
+      const response = await fetch(instanceUrl, options);
+      return response;
+    } catch (e) {
+      console.error(`Failed to proxy request to ${instanceUrl}`, e);
+      return null;
+    }
+  }
+
+  return new Elysia()
+    .get('/', () => ({ status: 'ok' }))
+    .group('/api', (app) => app
+      // Resolve user from API Key
+      .resolve(async ({ headers }) => {
+        const auth = headers['authorization'];
+        if (!auth || !auth.startsWith('Bearer ')) {
+          return { user: null };
+        }
+        const apiKey = auth.substring(7);
+        if (!apiKey) {
+          return { user: null };
+        }
+        const [user] = await db.select().from(schema.users).where(eq(schema.users.apiKey, apiKey));
+
+        return { user: user || null };
+      })
+      // Simple bearer token auth
+      .onBeforeHandle(({ user, set }) => {
+        if (!user) {
+          set.status = 401;
+          return { error: 'Unauthorized' };
+        }
+      })
+      .post('/instances', async ({ body, set, user }) => {
+        // Select a node for the new instance. Simple round-robin or first-available logic.
+        // For now, just pick the first one.
+        const [node] = await db.select().from(schema.nodes).limit(1);
+        if (!node) {
+          set.status = 503;
+          return { error: 'No available worker nodes to schedule instance.' };
+        }
+
+        // user is guaranteed to be non-null by the onBeforeHandle guard.
+        const [newInstance] = await db.insert(schema.instances).values({
+          nodeId: node.id,
+          userId: user!.id,
+          name: body.name,
+          phoneNumber: body.phone,
+          provider: body.provider,
+          webhookUrl: body.webhook,
+          cpuLimit: body.resources?.cpu,
+          memoryLimit: body.resources?.memory,
+          status: 'creating',
+        }).returning();
+
+        if (!newInstance) {
+          set.status = 500;
+          return { error: 'Failed to create instance in database' };
+        }
+
+        try {
+          await createAndStartContainer({
+            instanceId: newInstance.id,
+            node: node,
+            name: newInstance.name,
+            webhookUrl: newInstance.webhookUrl || '',
+            cpuLimit: newInstance.cpuLimit || '0.5',
+            memoryLimit: newInstance.memoryLimit || '512m',
+            provider: newInstance.provider,
+          });
+          const [updatedInstance] = await db.update(schema.instances)
+            .set({ status: 'running' })
+            .where(eq(schema.instances.id, newInstance.id))
+            .returning();
+          return updatedInstance;
+        } catch (error) {
+          console.error('Failed to start container:', error);
+          await db.update(schema.instances)
+            .set({ status: 'error' })
+            .where(eq(schema.instances.id, newInstance.id));
+          set.status = 500;
+          return { error: 'Failed to start container for instance' };
+        }
+      }, {
+        body: t.Object({
+          name: t.Optional(t.String()),
+          phone: t.String(),
+          provider: t.Union([
+            t.Literal('whatsmeow'),
+            t.Literal('baileys'),
+            t.Literal('wawebjs'),
+            t.Literal('waba')
+          ]),
+          webhook: t.Optional(t.String()),
+          resources: t.Optional(t.Object({
+            cpu: t.String(),
+            memory: t.String(),
+          }))
+        })
+      })
+      .get('/instances/:id/qr', async ({ params, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check and fetch instance with its node
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+        if (!instanceData || !instanceData.instances) {
+          set.status = 404;
+          return { error: 'Instance not found' };
+        }
+        if (!instanceData.nodes) {
+          set.status = 500;
+          return { error: 'Instance is not associated with a node.' };
+        }
+
+        const instanceUrl = `http://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+        const qrResponse = await proxyToInstance(instanceUrl);
+        if (!qrResponse) {
+          set.status = 503;
+          return { error: "Failed to connect to instance container." };
+        }
+        if (!qrResponse.ok) {
+          set.status = qrResponse.status;
+          return qrResponse.body;
+        }
+
+        // The whatsmeow provider returns a PNG. We need to proxy that correctly.
+        set.headers['Content-Type'] = qrResponse.headers.get('Content-Type') || 'image/png';
+        return qrResponse.blob();
+      })
+      .post('/instances/:id/send', async ({ params, body, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
+          set.status = 404;
+          return { error: 'Instance not found' };
+        }
+        if (!instanceData.nodes) {
+          set.status = 500;
+          return { error: 'Instance is not associated with a node.' };
+        }
+
+        const instanceUrl = `http://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+        const sendResponse = await proxyToInstance(instanceUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!sendResponse) {
+          set.status = 503;
+          return { error: "Failed to connect to instance container." };
+        }
+        set.status = sendResponse.status;
+        if (!sendResponse.ok) {
+          const errorText = await sendResponse.text();
+          try {
+            return JSON.parse(errorText);
+          } catch (e) {
+            return { error: errorText.trim() };
+          }
+        }
+        return await sendResponse.json();
+      }, {
+        body: t.Object({
+          to: t.String(),
+          text: t.String(),
+        })
+      })
+      .delete('/instances/:id', async ({ params, set, user }) => {
+        const instanceId = parseInt(params.id, 10);
+
+        // Ownership check
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
+          set.status = 404;
+          return { error: 'Instance not found' };
+        }
+        if (!instanceData.nodes) {
+          // Instance exists but node doesn't. Clean up DB record.
+          await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+          return { message: 'Instance found without a node. Record cleaned up.' };
+        }
+
+        try {
+          await stopAndRemoveContainer(instanceId, instanceData.nodes);
+          await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+          set.status = 204;
+        } catch (error) {
+          console.error('Failed to delete instance:', error);
+          set.status = 500;
+          return { error: 'Failed to delete instance' };
+        }
+      })
+      .post('/instances/:id/migrate', async ({ params, set, user, body }) => {
+        // The `target_node` from the README is ignored in this single-node implementation.
+        const instanceId = parseInt(params.id, 10);
+
+        // 1. Ownership check
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances || !instanceData.nodes) {
+          set.status = 404;
+          return { error: 'Instance not found or you do not have permission to access it' };
+        }
+
+        const instance = instanceData.instances;
+        const currentNode = instanceData.nodes;
+
+        // Find a new node to migrate to
+        const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+        if (!newNode) {
+          set.status = 503;
+          return { error: 'No available node to migrate to.' };
+        }
+
+        console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
+
+        try {
+          // 2. Set status to 'migrating'
+          await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
+
+          // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
+          await stopAndRemoveContainer(instanceId, currentNode);
+          console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
+
+          // 4. Create and start a new container. The provider will fetch the snapshot on startup.
+          await createAndStartContainer({
+            instanceId: instance.id,
+            node: newNode,
+            name: instance.name,
+            webhookUrl: instance.webhookUrl || '',
+            cpuLimit: instance.cpuLimit || '0.5',
+            memoryLimit: instance.memoryLimit || '512m',
+            provider: instance.provider,
+          });
+          console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
+
+          // 5. Set status back to 'running'
+          const [updatedInstance] = await db.update(schema.instances).set({
+            status: 'running',
+            nodeId: newNode.id,
+          })
+            .where(eq(schema.instances.id, instanceId))
+            .returning();
+
+          console.log(`Migration for instance ${instanceId} completed successfully.`);
+          return { status: 'ok', instance: updatedInstance };
+        } catch (error) {
+          console.error(`Migration failed for instance ${instanceId}:`, error);
+          await db.update(schema.instances).set({ status: 'error' }).where(eq(schema.instances.id, instanceId));
+          set.status = 500;
+          return { error: 'Migration failed' };
+        }
+      }, {
+        body: t.Object({
+          target_node: t.Optional(t.String()),
+        })
+      })
+    )
+    // New internal API group for state management
+    .group('/internal', (app) => app
+      .onBeforeHandle(({ headers, set }) => {
+        const internalSecret = process.env.INTERNAL_API_SECRET;
+        if (!internalSecret) {
+          console.error('INTERNAL_API_SECRET is not set. Internal API is disabled.');
+          set.status = 503;
+          return { error: 'Service Unavailable' };
+        }
+        if (headers['x-internal-secret'] !== internalSecret) {
+          set.status = 401;
+          return { error: 'Unauthorized' };
+        }
+      })
+      .get('/state/:instanceId', async ({ params }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const states = await db.select({
+          key: schema.instanceState.key,
+          value: schema.instanceState.value
+        }).from(schema.instanceState).where(eq(schema.instanceState.instanceId, instanceId));
+
+        return states;
+      })
+      .get('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+          value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+          eq(schema.instanceState.instanceId, instanceId),
+          eq(schema.instanceState.key, params.key)
+        ));
+
+        if (!state) {
+          set.status = 404;
+          return { error: 'State key not found' };
+        }
+        return state.value; // Return raw value
+      })
+      .post('/state/:instanceId', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const { key, value } = body;
+        const valueAsBuffer = Buffer.from(value);
+
+        await db.insert(schema.instanceState)
+          .values({ instanceId, key, value: valueAsBuffer })
+          .onConflictDoUpdate({
+            target: [schema.instanceState.instanceId, schema.instanceState.key],
+            set: { value: valueAsBuffer }
+          });
+
+        set.status = 204;
+      }, {
+        body: t.Object({
+          key: t.String(),
+          value: t.String(),
+        })
+      })
+      .delete('/state/:instanceId/:key', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const result = await db.delete(schema.instanceState).where(and(
+          eq(schema.instanceState.instanceId, instanceId),
+          eq(schema.instanceState.key, params.key)
+        )).returning();
+
+        if (result.length === 0) {
+          set.status = 404;
+          return { error: 'State key not found' };
+        }
+
+        set.status = 204;
+      })
+      .get('/state/:instanceId/snapshot', async ({ params, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+        const [state] = await db.select({
+          value: schema.instanceState.value
+        }).from(schema.instanceState).where(and(
+          eq(schema.instanceState.instanceId, instanceId),
+          eq(schema.instanceState.key, 'session_snapshot')
+        ));
+
+        if (!state || !state.value) {
+          set.status = 404;
+          return { error: 'Snapshot not found' };
+        }
+        // The value is a buffer from the bytea column
+        set.headers['Content-Type'] = 'application/octet-stream';
+        return state.value;
+      })
+      .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
+        const instanceId = parseInt(params.instanceId, 10);
+
+        // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+        const value = Buffer.from(body);
+
+        await db.insert(schema.instanceState)
+          .values({ instanceId: instanceId, key: 'session_snapshot', value })
+          .onConflictDoUpdate({
+            target: [schema.instanceState.instanceId, schema.instanceState.key],
+            set: { value }
+          });
+
+        set.status = 204;
+      }, { body: t.ArrayBuffer() })
+    )
+    // New admin API group for node management
+    .group('/admin', (app) => app
+      .onBeforeHandle(({ headers, set }) => {
+        const adminSecret = process.env.ADMIN_API_SECRET;
+        if (!adminSecret) {
+          console.error('ADMIN_API_SECRET is not set. Admin API is disabled.');
+          set.status = 503;
+          return { error: 'Service Unavailable' };
+        }
+        if (headers['x-admin-api-secret'] !== adminSecret) {
+          set.status = 401;
+          return { error: 'Unauthorized' };
+        }
+      })
+      .post('/nodes', async ({ body, set }) => {
+        const [newNode] = await db.insert(schema.nodes).values(body).returning();
+        if (!newNode) {
+          set.status = 500;
+          return { error: 'Failed to create node' };
+        }
+        return newNode;
+      }, {
+        body: t.Object({
+          name: t.String(),
+          dockerHost: t.String(),
+          publicHost: t.String(),
+        })
+      })
+      .get('/nodes', async () => {
+        return await db.select().from(schema.nodes);
+      })
+      .get('/nodes/:id', async ({ params, set }) => {
+        const [node] = await db.select().from(schema.nodes).where(eq(schema.nodes.id, params.id));
+        if (!node) {
+          set.status = 404;
+          return { error: 'Node not found' };
+        }
+        return node;
+      }, {
+        params: t.Object({ id: t.Numeric() })
+      })
+      .put('/nodes/:id', async ({ params, body, set }) => {
+        const [updatedNode] = await db.update(schema.nodes)
+          .set(body)
+          .where(eq(schema.nodes.id, params.id))
+          .returning();
+        if (!updatedNode) {
+          set.status = 404;
+          return { error: 'Node not found' };
+        }
+        return updatedNode;
+      }, {
+        params: t.Object({ id: t.Numeric() }),
+        body: t.Object({
+          name: t.Optional(t.String()),
+          dockerHost: t.Optional(t.String()),
+          publicHost: t.Optional(t.String()),
+        })
+      })
+      .delete('/nodes/:id', async ({ params, set }) => {
+        try {
+          const result = await db.delete(schema.nodes).where(eq(schema.nodes.id, params.id)).returning();
+          if (result.length === 0) {
+            set.status = 404;
+            return { error: 'Node not found' };
+          }
+          set.status = 204;
+        } catch (error: any) {
+          // Check for foreign key violation (Postgres error code 23503). Drizzle might wrap it.
+          if (error.code === '23503' || error?.cause?.code === '23503') {
+            set.status = 409;
+            return { error: 'Cannot delete node because it has instances assigned to it.' };
+          }
+          console.error('Failed to delete node:', error);
+          set.status = 500;
+          return { error: 'Internal server error' };
+        }
+      }, {
+        params: t.Object({ id: t.Numeric() })
+      })
+    );
 }
 ````
 
@@ -1470,109 +1038,6 @@ export function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): Do
 // This file ensures the directory is tracked by git.
 ````
 
-## File: gateway/tests/e2e/state.test.ts
-````typescript
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
-import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from '../helpers/setup';
-import * as schema from '../../../drizzle/schema';
-import { eq, and } from 'drizzle-orm';
-
-describe('E2E - Internal State API', () => {
-    let serverUrl: string;
-    let testInstance: Instance;
-    let testUser: User;
-    let testNode: Node;
-    let appInstance: any;
-
-    beforeAll(async () => {
-        const setupResult = await setup();
-        serverUrl = setupResult.serverUrl;
-        testUser = setupResult.user;
-        testNode = setupResult.node;
-        appInstance = setupResult.app;
-    });
-
-    afterAll(async () => {
-        if (appInstance) {
-            await teardown(appInstance);
-        }
-    });
-
-    beforeEach(async () => {
-        // Create a test instance record directly in the DB for these tests
-        [testInstance] = await db.insert(schema.instances).values({
-            nodeId: testNode.id,
-            userId: testUser.id,
-            phoneNumber: '9876543210',
-            provider: 'whatsmeow',
-            status: 'running',
-        }).returning();
-    });
-
-    afterEach(async () => {
-        await cleanupDb();
-    });
-
-    test('should reject access without the internal secret', async () => {
-        const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
-        expect(res.status).toBe(401);
-
-        const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/octet-stream',
-            },
-            body: Buffer.from('test data')
-        });
-        expect(postRes.status).toBe(401);
-    });
-
-    test('should upload and download a state snapshot', async () => {
-        const instanceId = testInstance.id;
-        const snapshotData = Buffer.from(`this is a binary test snapshot payload for instance ${instanceId}`);
-
-        // 1. Upload Snapshot
-        const uploadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
-            method: 'POST',
-            headers: {
-                'X-Internal-Secret': TEST_INTERNAL_API_SECRET,
-                'Content-Type': 'application/octet-stream',
-            },
-            body: snapshotData,
-        });
-        
-        expect(uploadResponse.status).toBe(204);
-
-        // 2. Verify the snapshot was saved correctly in the database
-        const dbState = await db.query.instanceState.findFirst({
-            where: and(
-                eq(schema.instanceState.instanceId, instanceId),
-                eq(schema.instanceState.key, 'session_snapshot')
-            ),
-        });
-        expect(dbState).toBeDefined();
-        expect(dbState?.value).toEqual(snapshotData);
-
-        // 3. Download the snapshot
-        const downloadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
-            headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
-        });
-
-        expect(downloadResponse.status).toBe(200);
-        expect(downloadResponse.headers.get('content-type')).toBe('application/octet-stream');
-        
-        const downloadedData = Buffer.from(await downloadResponse.arrayBuffer());
-        expect(downloadedData).toEqual(snapshotData);
-
-        // 4. Test GET for a non-existent snapshot returns 404
-        const notFoundResponse = await fetch(`${serverUrl}/internal/state/999999/snapshot`, {
-             headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
-        });
-        expect(notFoundResponse.status).toBe(404);
-    });
-});
-````
-
 ## File: gateway/tests/integration/.gitkeep
 ````
 // This file ensures the directory is tracked by git.
@@ -1581,6 +1046,420 @@ describe('E2E - Internal State API', () => {
 ## File: gateway/tests/unit/.gitkeep
 ````
 // This file ensures the directory is tracked by git.
+````
+
+## File: gateway/tests/utils/test-setup.ts
+````typescript
+import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres, { type Sql } from 'postgres';
+import * as schema from '../../../drizzle/schema';
+import { promises as fs } from 'fs';
+
+export interface TestEnvironment {
+  DATABASE_URL: string;
+  INTERNAL_API_SECRET: string;
+  API_SECRET: string;
+  ADMIN_API_SECRET: string;
+  GATEWAY_URL: string;
+  NODE_ENV: string;
+}
+
+let dbConnection: Sql | null = null;
+let db: any = null;
+let envFileCreated = false;
+let migrationsRun = false;
+let env: TestEnvironment | null = null;
+
+export function getEnvironment(): TestEnvironment {
+  if (!env) {
+    throw new Error('Test environment is not initialized. Call ensureTestEnvironment() first.');
+  }
+  return env;
+}
+
+/**
+ * Ensures the test environment is properly set up
+ */
+export async function ensureTestEnvironment(): Promise<TestEnvironment> {
+  if (env) {
+    return env;
+  }
+  console.log('🔧 Setting up test environment...');
+
+  // Set up environment variables
+  const testEnv = await setupEnvironment();
+
+  // Start test database if needed
+  await ensureTestDatabase();
+
+  // Set up database schema
+  await ensureDatabaseSchema();
+
+  console.log('✅ Test environment ready');
+  return testEnv;
+}
+
+/**
+ * Sets up the test environment variables
+ */
+async function setupEnvironment(): Promise<TestEnvironment> {
+  const testEnv: TestEnvironment = {
+    DATABASE_URL: 'postgresql://test_user:test_password@localhost:5433/test_db',
+    INTERNAL_API_SECRET: 'test-internal-secret-for-ci',
+    API_SECRET: 'test-api-key-secret-for-ci',
+    ADMIN_API_SECRET: 'test-admin-secret-for-ci',
+    GATEWAY_URL: 'http://localhost:3000',
+    NODE_ENV: 'test'
+  };
+
+  // Set environment variables
+  Object.entries(testEnv).forEach(([key, value]) => {
+    process.env[key] = value;
+  });
+
+  // Store for later retrieval
+  env = testEnv;
+
+  // Create .env.test file if it doesn't exist
+  const gatewayDir = join(process.cwd());
+  const envTestPath = join(gatewayDir, '.env.test');
+
+  if (!existsSync(envTestPath)) {
+    const envContent = Object.entries(testEnv)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    await fs.writeFile(envTestPath, envContent);
+    envFileCreated = true;
+    console.log('📝 Created .env.test file');
+  }
+
+  return testEnv;
+}
+
+/**
+ * Ensures test database is running and accessible
+ */
+async function ensureTestDatabase(): Promise<void> {
+  console.log('🗄️  Checking test database...');
+
+  try {
+    // Try to connect to the database
+    const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
+    await client`SELECT 1`;
+    await client.end();
+    console.log('✅ Test database is accessible');
+    return;
+  } catch (error) {
+    console.log('⚠️  Test database not accessible, starting it...');
+    await startTestDatabase();
+  }
+}
+
+/**
+ * Starts the test database using Docker
+ */
+async function startTestDatabase(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    console.log('🐳 Starting test database container...');
+
+    // Stop existing container if it exists
+    const stopCmd = spawn('docker', [
+      'stop', 'whatsapp-gateway-saas-test-db'
+    ], { stdio: 'pipe' });
+
+    stopCmd.on('close', () => {
+      const rmCmd = spawn('docker', [
+        'rm', 'whatsapp-gateway-saas-test-db'
+      ], { stdio: 'pipe' });
+
+      rmCmd.on('close', () => {
+        const runCmd = spawn('docker', [
+          'run', '-d',
+          '--name', 'whatsapp-gateway-saas-test-db',
+          '-e', 'POSTGRES_USER=test_user',
+          '-e', 'POSTGRES_PASSWORD=test_password',
+          '-e', 'POSTGRES_DB=test_db',
+          '-p', '5433:5432',
+          '--restart', 'unless-stopped',
+          'postgres:16-alpine'
+        ], { stdio: 'pipe' });
+
+        runCmd.on('close', (code) => {
+          if (code === 0) {
+            console.log('✅ Test database container started');
+            waitForDatabase().then(resolve).catch(reject);
+          } else {
+            reject(new Error('Failed to start test database container'));
+          }
+        });
+
+        runCmd.on('error', reject);
+      });
+
+      rmCmd.on('error', () => {
+        // Container might not exist, which is fine
+        console.log('ℹ️  No existing container to remove');
+        const runCmd = spawn('docker', [
+          'run', '-d',
+          '--name', 'whatsapp-gateway-saas-test-db',
+          '-e', 'POSTGRES_USER=test_user',
+          '-e', 'POSTGRES_PASSWORD=test_password',
+          '-e', 'POSTGRES_DB=test_db',
+          '-p', '5433:5432',
+          '--restart', 'unless-stopped',
+          'postgres:16-alpine'
+        ], { stdio: 'pipe' });
+
+        runCmd.on('close', (code) => {
+          if (code === 0) {
+            console.log('✅ Test database container started');
+            waitForDatabase().then(resolve).catch(reject);
+          } else {
+            reject(new Error('Failed to start test database container'));
+          }
+        });
+
+        runCmd.on('error', reject);
+      });
+    });
+
+    stopCmd.on('error', () => {
+      // Container might not exist, which is fine
+      console.log('ℹ️  No existing container to stop');
+    });
+  });
+}
+
+/**
+ * Waits for the database to be ready
+ */
+async function waitForDatabase(): Promise<void> {
+  console.log('⏳ Waiting for database to be ready...');
+
+  for (let i = 0; i < 30; i++) {
+    try {
+      const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
+      await client`SELECT 1`;
+      await client.end();
+      console.log('✅ Database is ready');
+      return;
+    } catch (error) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  throw new Error('Database failed to become ready within 30 seconds');
+}
+
+/**
+ * Ensures the database schema is set up
+ */
+async function ensureDatabaseSchema(): Promise<void> {
+  if (migrationsRun) {
+    return;
+  }
+
+  console.log('🗃️  Setting up database schema...');
+
+  try {
+    // Try to connect and check if tables exist
+    await connectToDatabase();
+
+    // Check if tables exist by trying to query one of them
+    try {
+      await db.query.users.findFirst();
+      console.log('✅ Database schema already exists');
+      migrationsRun = true;
+      return;
+    } catch (error) {
+      // Tables don't exist, need to run migrations
+      console.log('🔄 Database schema needs to be created');
+    }
+
+    // Run migrations
+    await runMigrations();
+    migrationsRun = true;
+    console.log('✅ Database schema created successfully');
+
+  } catch (error) {
+    console.error('❌ Failed to set up database schema:', error);
+    throw error;
+  }
+}
+
+/**
+ * Connects to the database
+ */
+async function connectToDatabase(): Promise<void> {
+  if (dbConnection) {
+    return;
+  }
+
+  dbConnection = postgres(process.env.DATABASE_URL!);
+  db = drizzle(dbConnection, { schema });
+}
+
+/**
+ * Runs database migrations
+ */
+async function runMigrations(): Promise<void> {
+  console.log('📦 Running database migrations...');
+
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+
+    // First, generate migrations if they don't exist
+    const generateCmd = spawn('npx', ['drizzle-kit', 'generate'], {
+      cwd: join(process.cwd(), '..'),
+      stdio: 'pipe'
+    });
+
+    generateCmd.on('close', (code: number | null) => {
+      if (code === 0) {
+        console.log('✅ Migrations generated');
+
+        // Then run the migrations
+        const migrateCmd = spawn('npx', ['drizzle-kit', 'migrate'], {
+          cwd: join(process.cwd(), '..'),
+          stdio: 'pipe'
+        });
+
+        migrateCmd.on('close', (code: number | null) => {
+          if (code === 0) {
+            console.log('✅ Migrations applied successfully');
+            resolve();
+          } else {
+            reject(new Error('Migration failed'));
+          }
+        });
+
+        migrateCmd.on('error', reject);
+      } else {
+        reject(new Error('Migration generation failed'));
+      }
+    });
+
+    generateCmd.on('error', reject);
+  });
+}
+
+/**
+ * Gets the database connection for tests
+ */
+export async function getDb() {
+  if (!db) {
+    await connectToDatabase();
+  }
+  return db;
+}
+
+/**
+ * Cleans up the test environment
+ */
+export async function cleanup(): Promise<void> {
+  console.log('🧹 Cleaning up test environment...');
+
+  if (dbConnection) {
+    try {
+      await dbConnection.end({ timeout: 5 });
+      dbConnection = null;
+      db = null;
+    } catch (error) {
+      console.warn('⚠️  Failed to close database connection:', error);
+    }
+  }
+
+  if (envFileCreated) {
+    try {
+      const gatewayDir = join(process.cwd());
+      const envTestPath = join(gatewayDir, '.env.test');
+      await fs.unlink(envTestPath);
+      console.log('🗑️  Removed .env.test file');
+      envFileCreated = false; // Reset for next test run
+    } catch (error) {
+      console.warn('⚠️  Failed to remove .env.test file:', error);
+    }
+  }
+
+  // Only clean up database container if explicitly requested or no other tests are running
+  // This prevents cleanup conflicts when multiple test files are running
+}
+
+/**
+ * Force cleanup of database container (for explicit cleanup only)
+ */
+export async function forceCleanup(): Promise<void> {
+  console.log('🧹 Force cleaning up test environment...');
+
+  if (dbConnection) {
+    try {
+      await dbConnection.end({ timeout: 5 });
+      dbConnection = null;
+      db = null;
+    } catch (error) {
+      console.warn('⚠️  Failed to close database connection:', error);
+    }
+  }
+
+  if (envFileCreated) {
+    try {
+      const gatewayDir = join(process.cwd());
+      const envTestPath = join(gatewayDir, '.env.test');
+      await fs.unlink(envTestPath);
+      console.log('🗑️  Removed .env.test file');
+    } catch (error) {
+      console.warn('⚠️  Failed to remove .env.test file:', error);
+    }
+  }
+
+  // Stop test database container
+  try {
+    const { spawn } = require('child_process');
+    const stopCmd = spawn('docker', ['stop', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
+
+    stopCmd.on('close', () => {
+      const rmCmd = spawn('docker', ['rm', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
+      rmCmd.on('close', () => {
+        console.log('✅ Test database container stopped and removed');
+      });
+    });
+  } catch (error) {
+    console.warn('⚠️  Failed to clean up test database container:', error);
+  }
+}
+````
+
+## File: gateway/tests/setup.ts
+````typescript
+import { beforeAll, afterAll } from 'bun:test';
+import { ensureTestEnvironment, cleanup } from './utils/test-setup';
+
+// Global setup for all tests
+beforeAll(async () => {
+  console.log('🚀 Setting up global test environment...');
+  await ensureTestEnvironment();
+}, 60000);
+
+// Global cleanup after all tests
+afterAll(async () => {
+  console.log('🧹 Cleaning up global test environment...');
+  await cleanup();
+}, 30000);
+
+// Handle unhandled promise rejections in tests
+process.on('unhandledRejection', async (reason, promise) => {
+  await cleanup();
+});
+
+// Handle uncaught exceptions in tests
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
 ````
 
 ## File: providers/whatsmeow/.env.example
@@ -1883,231 +1762,101 @@ export default defineConfig({
 });
 ````
 
-## File: gateway/tests/e2e/instances.test.ts
+## File: gateway/tests/e2e/state.test.ts
 ````typescript
-import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
-import { db, setup, teardown, cleanupDb, cleanupContainers, TEST_USER_API_KEY, findContainerByInstanceId } from '../helpers/setup';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, createTestInstance, TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from '../helpers/setup';
 import * as schema from '../../../drizzle/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 
-describe('E2E - Instance Management API', () => {
+describe('E2E - Internal State API', () => {
     let serverUrl: string;
+    let testInstance: Instance;
+    let testUser: User;
+    let testNode: Node;
     let appInstance: any;
 
     beforeAll(async () => {
         const setupResult = await setup();
         serverUrl = setupResult.serverUrl;
+        testUser = setupResult.user;
+        testNode = setupResult.nodes[0];
         appInstance = setupResult.app;
     });
 
     afterAll(async () => {
-        // Final cleanup after all tests in this file run
-        await cleanupContainers();
         if (appInstance) {
             await teardown(appInstance);
         }
     });
 
+    beforeEach(async () => {
+        // Create a test instance record directly in the DB for these tests
+        testInstance = await createTestInstance(db, testUser, testNode);
+    });
+
     afterEach(async () => {
-        // Clean up resources between tests to ensure isolation
-        await cleanupContainers();
         await cleanupDb();
     });
 
-    test('should create, start, and delete a whatsmeow instance', async () => {
-        // 1. Create Instance
-        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+    test('should reject access without the internal secret', async () => {
+        const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
+        expect(res.status).toBe(401);
+
+        const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${TEST_USER_API_KEY}`
+                'Content-Type': 'application/octet-stream',
             },
-            body: JSON.stringify({
-                name: "e2e-test-instance",
-                phone: "1234567890",
-                provider: "whatsmeow",
-            }),
+            body: Buffer.from('test data')
+        });
+        expect(postRes.status).toBe(401);
+    });
+
+    test('should upload and download a state snapshot', async () => {
+        const instanceId = testInstance.id;
+        const snapshotData = Buffer.from(`this is a binary test snapshot payload for instance ${instanceId}`);
+
+        // 1. Upload Snapshot
+        const uploadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+            method: 'POST',
+            headers: {
+                'X-Internal-Secret': TEST_INTERNAL_API_SECRET,
+                'Content-Type': 'application/octet-stream',
+            },
+            body: snapshotData,
         });
         
-        expect(createResponse.status).toBe(200);
-        const instance = await createResponse.json() as { id: number; status: string; };
+        expect(uploadResponse.status).toBe(204);
+
+        // 2. Verify the snapshot was saved correctly in the database
+        const dbState = await db.query.instanceState.findFirst({
+            where: and(
+                eq(schema.instanceState.instanceId, instanceId),
+                eq(schema.instanceState.key, 'session_snapshot')
+            ),
+        });
+        expect(dbState).toBeDefined();
+        expect(dbState?.value).toEqual(snapshotData);
+
+        // 3. Download the snapshot
+        const downloadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+            headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+        });
+
+        expect(downloadResponse.status).toBe(200);
+        expect(downloadResponse.headers.get('content-type')).toBe('application/octet-stream');
         
-        expect(instance.id).toBeTypeOf('number');
-        expect(instance.status).toBe('running');
-        const instanceId = instance.id;
+        const downloadedData = Buffer.from(await downloadResponse.arrayBuffer());
+        expect(downloadedData).toEqual(snapshotData);
 
-        // 2. Verify instance exists in the database
-        const dbInstance = await db.query.instances.findFirst({
-            where: eq(schema.instances.id, instanceId),
+        // 4. Test GET for a non-existent snapshot returns 404
+        const notFoundResponse = await fetch(`${serverUrl}/internal/state/999999/snapshot`, {
+             headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
         });
-        expect(dbInstance).toBeDefined();
-        expect(dbInstance?.id).toBe(instanceId);
-
-        // 3. Verify the corresponding Docker container is running
-        const container = await findContainerByInstanceId(instanceId);
-        expect(container).toBeDefined();
-        expect(container?.State).toBe('running');
-        
-        // 4. Delete the Instance
-        const deleteResponse = await fetch(`${serverUrl}/api/instances/${instanceId}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
-        });
-
-        expect(deleteResponse.status).toBe(204);
-
-        // 5. Verify the container has been removed
-        const containerAfterDelete = await findContainerByInstanceId(instanceId);
-        expect(containerAfterDelete).toBeUndefined();
-
-        // 6. Verify the instance has been removed from the database
-        const dbInstanceAfterDelete = await db.query.instances.findFirst({
-            where: eq(schema.instances.id, instanceId),
-        });
-        expect(dbInstanceAfterDelete).toBeUndefined();
-    }, 20000); // Increase timeout to allow for docker pull/start
+        expect(notFoundResponse.status).toBe(404);
+    });
 });
-````
-
-## File: gateway/tests/helpers/setup.ts
-````typescript
-import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import postgres, { type Sql } from 'postgres';
-import { getDockerClientForNode, type ContainerInfo } from '../../src/docker.client';
-import * as schema from '../../../drizzle/schema';
-import { createApp } from '../../src/app';
-import { testSetup } from '../utils/test-setup';
-
-// --- Types ---
-export type User = typeof schema.users.$inferSelect;
-export type Node = typeof schema.nodes.$inferSelect;
-export type Instance = typeof schema.instances.$inferSelect;
-
-// --- DB Connection ---
-// These are initialized in setup() to prevent connection attempts before the test DB is ready.
-let client: Sql;
-export let db: PostgresJsDatabase<typeof schema>;
-
-// --- Test Constants ---
-// Bun automatically loads .env, but we provide fallbacks.
-export const TEST_USER_API_KEY = process.env.API_SECRET || 'test-api-key-secret-for-ci';
-export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || 'test-internal-secret-for-ci';
-export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
-export const TEST_NODE_PUBLIC_HOST = 'localhost';
-
-const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
-
-
-/**
- * Sets up the test environment:
- * 1. Establishes DB connection.
- * 2. Starts the API server on a random available port.
- * 3. Cleans and seeds the database with a test user and a test node.
- * @returns An object with the server URL and the created user/node entities.
- */
-export const setup = async () => {
-  // Ensure test environment is properly set up
-  await testSetup.ensureTestEnvironment();
-
-  // 1. Establish DB connection
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
-  }
-  client = postgres(connectionString);
-  db = drizzle(client, { schema });
-
-  // 2. Create app with database and start server on a random available port
-  const app = createApp(db);
-  await app.listen(0);
-
-  // 3. Clean database before seeding to ensure a fresh state.
-  await db.delete(schema.instanceState);
-  await db.delete(schema.instances);
-  await db.delete(schema.users);
-  await db.delete(schema.nodes);
-
-  const [testUser] = await db.insert(schema.users).values({
-    email: `test-${Date.now()}@example.com`,
-    apiKey: TEST_USER_API_KEY,
-  }).returning();
-
-  const [testNode] = await db.insert(schema.nodes).values({
-    name: 'test-node-1',
-    dockerHost: TEST_NODE_DOCKER_HOST,
-    publicHost: TEST_NODE_PUBLIC_HOST,
-  }).returning();
-
-  return {
-    serverUrl: `http://localhost:${app.server?.port}`,
-    user: testUser,
-    node: testNode,
-    app, // Return app instance for teardown
-  };
-};
-
-/**
- * Tears down the test environment:
- * 1. Stops the API server.
- * 2. Closes the database connection.
- * 3. Cleans up test database and environment.
- */
-export const teardown = async (app: any) => {
-  await app.stop();
-  if (client) {
-    await client.end({ timeout: 5 });
-  }
-  // Clean up the test environment (but not the database container)
-  await testSetup.cleanup();
-};
-
-/**
- * Removes all instance-related records from the database.
- */
-export const cleanupDb = async () => {
-    // db is guaranteed to be initialized by setup() in beforeAll
-    await db.delete(schema.instanceState);
-    await db.delete(schema.instances);
-};
-
-/**
- * Finds and removes all Docker containers created by the tests.
- */
-export const cleanupContainers = async () => {
-    const containers = await docker.listContainers({
-        all: true,
-        filters: { label: [`whatsapp-gateway-saas.instance-id`] }
-    });
-
-    for (const containerInfo of containers) {
-        console.log(`Cleaning up test container: ${containerInfo.Id}`);
-        try {
-            await docker.stopContainer(containerInfo.Id, { t: 5 });
-        } catch (e: any) {
-            // Ignore if already stopped (304) or not found (404)
-            if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
-        }
-        try {
-            await docker.removeContainer(containerInfo.Id);
-        } catch (e: any) {
-             // Ignore if not found (404)
-            if (e.statusCode !== 404) console.error(e);
-        }
-    }
-};
-
-/**
- * Test helper to find a container by its instance ID label.
- * @param instanceId The ID of the instance.
- * @returns ContainerInfo if found, otherwise undefined.
- */
-export async function findContainerByInstanceId(instanceId: number): Promise<ContainerInfo | undefined> {
-    const containers = await docker.listContainers({
-        all: true,
-        filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
-    });
-    return containers[0];
-}
 ````
 
 ## File: gateway/tests/unit/docker.service.test.ts
@@ -2322,6 +2071,7 @@ networks:
 DATABASE_URL="postgresql://user:password@localhost:5432/whatsapp_gateway"
 API_SECRET="your-super-secret-api-key"
 INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+ADMIN_API_SECRET="a-secret-for-privileged-admin-operations"
 GATEWAY_URL="http://host.docker.internal:3000" # URL for provider containers to reach the gateway
 ````
 
@@ -2609,6 +2359,268 @@ This is not an official WhatsApp product. Use it for legitimate purposes only. S
     { "path": "drizzle" },
     { "path": "gateway" }
   ]
+}
+````
+
+## File: gateway/tests/e2e/instances.test.ts
+````typescript
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { db, setup, teardown, cleanupDb, cleanupContainers, TEST_USER_API_KEY, findContainerByInstanceId } from '../helpers/setup';
+import * as schema from '../../../drizzle/schema';
+import { eq } from 'drizzle-orm';
+
+describe('E2E - Instance Management API', () => {
+    let serverUrl: string;
+    let appInstance: any;
+
+    beforeAll(async () => {
+        const setupResult = await setup();
+        serverUrl = setupResult.serverUrl;
+        appInstance = setupResult.app;
+    });
+
+    afterAll(async () => {
+        // Final cleanup after all tests in this file run
+        await cleanupContainers();
+        if (appInstance) {
+            await teardown(appInstance);
+        }
+    });
+
+    afterEach(async () => {
+        // Clean up resources between tests to ensure isolation
+        await cleanupContainers();
+        await cleanupDb();
+    });
+
+    test('should create, start, and delete a whatsmeow instance', async () => {
+        // 1. Create Instance
+        const createResponse = await fetch(`${serverUrl}/api/instances`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${TEST_USER_API_KEY}`
+            },
+            body: JSON.stringify({
+                name: "e2e-test-instance",
+                phone: "1234567890",
+                provider: "whatsmeow",
+            }),
+        });
+        
+        expect(createResponse.status).toBe(200);
+        const instance = await createResponse.json() as { id: number; status: string; };
+        
+        expect(instance.id).toBeTypeOf('number');
+        expect(instance.status).toBe('running');
+        const instanceId = instance.id;
+
+        // 2. Verify instance exists in the database
+        const dbInstance = await db.query.instances.findFirst({
+            where: eq(schema.instances.id, instanceId),
+        });
+        expect(dbInstance).toBeDefined();
+        expect(dbInstance?.id).toBe(instanceId);
+
+        // 3. Verify the corresponding Docker container is running
+        const container = await findContainerByInstanceId(instanceId);
+        expect(container).toBeDefined();
+        expect(container?.State).toBe('running');
+        
+        // 4. Delete the Instance
+        const deleteResponse = await fetch(`${serverUrl}/api/instances/${instanceId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${TEST_USER_API_KEY}` }
+        });
+
+        expect(deleteResponse.status).toBe(204);
+
+        // 5. Verify the container has been removed
+        const containerAfterDelete = await findContainerByInstanceId(instanceId);
+        expect(containerAfterDelete).toBeUndefined();
+
+        // 6. Verify the instance has been removed from the database
+        const dbInstanceAfterDelete = await db.query.instances.findFirst({
+            where: eq(schema.instances.id, instanceId),
+        });
+        expect(dbInstanceAfterDelete).toBeUndefined();
+    }, 20000); // Increase timeout to allow for docker pull/start
+});
+````
+
+## File: gateway/tests/helpers/setup.ts
+````typescript
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import postgres, { type Sql } from 'postgres';
+import { getDockerClientForNode, type ContainerInfo } from '../../src/docker.client';
+import * as schema from '../../../drizzle/schema';
+import { createApp } from '../../src/app';
+import { ensureTestEnvironment, getEnvironment, cleanup as testCleanup } from '../utils/test-setup';
+
+// --- Types ---
+export type User = typeof schema.users.$inferSelect;
+export type Node = typeof schema.nodes.$inferSelect;
+export type Instance = typeof schema.instances.$inferSelect;
+
+// --- DB Connection ---
+// These are initialized in setup() to prevent connection attempts before the test DB is ready.
+let client: Sql;
+export let db: PostgresJsDatabase<typeof schema>;
+
+// --- Test Constants (initialized in setup) ---
+export let TEST_USER_API_KEY: string;
+export let TEST_INTERNAL_API_SECRET: string;
+export let TEST_ADMIN_API_SECRET: string;
+export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
+export const TEST_NODE_PUBLIC_HOST_PREFIX = 'test-node.local';
+
+const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
+
+interface SetupOptions {
+  nodeCount?: number;
+}
+
+
+/**
+ * Sets up the test environment:
+ * 1. Establishes DB connection.
+ * 2. Starts the API server on a random available port.
+ * 3. Cleans and seeds the database with a test user and a test node.
+ * @returns An object with the server URL and the created user/node entities.
+ */
+export const setup = async (options: SetupOptions = {}) => {
+  const { nodeCount = 1 } = options;
+  // Ensure the environment is ready. This is idempotent and safe to call.
+  await ensureTestEnvironment();
+
+  const env = getEnvironment(); // This will now succeed.
+  TEST_USER_API_KEY = env.API_SECRET;
+  TEST_INTERNAL_API_SECRET = env.INTERNAL_API_SECRET;
+  TEST_ADMIN_API_SECRET = env.ADMIN_API_SECRET;
+
+  // 1. Establish DB connection
+  // Use the connection string from the now-initialized environment
+  const connectionString = env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
+  }
+  client = postgres(connectionString);
+  db = drizzle(client, { schema });
+
+  // 2. Create app with database and start server on a random available port
+  const app = createApp(db);
+  await app.listen(0);
+
+  // 3. Clean database before seeding to ensure a fresh state.
+  await db.delete(schema.instanceState);
+  await db.delete(schema.instances);
+  await db.delete(schema.users);
+  await db.delete(schema.nodes);
+
+  const [testUser] = await db.insert(schema.users).values({
+    email: `test-${Date.now()}@example.com`,
+    apiKey: TEST_USER_API_KEY,
+  }).returning();
+
+  const testNodes: Node[] = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const [testNode] = await db.insert(schema.nodes).values({
+      name: `test-node-${i + 1}`,
+      dockerHost: TEST_NODE_DOCKER_HOST,
+      publicHost: `${TEST_NODE_PUBLIC_HOST_PREFIX}-${i + 1}`,
+    }).returning();
+    testNodes.push(testNode);
+  }
+
+  return {
+    serverUrl: `http://localhost:${app.server?.port}`,
+    user: testUser,
+    nodes: testNodes,
+    app, // Return app instance for teardown
+  };
+};
+
+/**
+ * Tears down the test environment:
+ * 1. Stops the API server.
+ * 2. Closes the database connection.
+ * 3. Cleans up test database and environment.
+ */
+export const teardown = async (app: any) => {
+  await app.stop();
+  if (client) {
+    await client.end({ timeout: 5 });
+  }
+  // Clean up the test environment (but not the database container)
+  await testCleanup();
+};
+
+/**
+ * Removes all instance-related records from the database.
+ */
+export const cleanupDb = async () => {
+    // db is guaranteed to be initialized by setup() in beforeAll
+    await db.delete(schema.instanceState);
+    await db.delete(schema.instances);
+};
+
+/**
+ * Helper to create a test instance in the database.
+ */
+export async function createTestInstance(
+    db: PostgresJsDatabase<typeof schema>,
+    user: User,
+    node: Node,
+    overrides: Partial<Omit<Instance, 'id' | 'userId' | 'nodeId'>> = {}
+): Promise<Instance> {
+    const [instance] = await db.insert(schema.instances).values({
+        nodeId: node.id,
+        userId: user.id,
+        phoneNumber: '9876543210',
+        provider: 'whatsmeow',
+        status: 'running', // Default to running for most API tests
+        ...overrides,
+    }).returning();
+    return instance;
+}
+
+/**
+ * Finds and removes all Docker containers created by the tests.
+ */
+export const cleanupContainers = async () => {
+    const containers = await docker.listContainers({
+        all: true,
+        filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+    });
+
+    for (const containerInfo of containers) {
+        console.log(`Cleaning up test container: ${containerInfo.Id}`);
+        try {
+            await docker.stopContainer(containerInfo.Id, { t: 5 });
+        } catch (e: any) {
+            // Ignore if already stopped (304) or not found (404)
+            if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+        }
+        try {
+            await docker.removeContainer(containerInfo.Id);
+        } catch (e: any) {
+             // Ignore if not found (404)
+            if (e.statusCode !== 404) console.error(e);
+        }
+    }
+};
+
+/**
+ * Test helper to find a container by its instance ID label.
+ * @param instanceId The ID of the instance.
+ * @returns ContainerInfo if found, otherwise undefined.
+ */
+export async function findContainerByInstanceId(instanceId: number): Promise<ContainerInfo | undefined> {
+    const containers = await docker.listContainers({
+        all: true,
+        filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+    });
+    return containers[0];
 }
 ````
 
@@ -3099,32 +3111,6 @@ func main() {
 }
 ````
 
-## File: package.json
-````json
-{
-  "name": "whatsapp-gateway-saas",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "gateway",
-    "drizzle"
-  ],
-  "scripts": {
-    "dev": "bun --cwd gateway run dev",
-    "test": "bun --cwd gateway run test",
-    "test:watch": "bun --cwd gateway run test --watch",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
-  },
-  "devDependencies": {
-    "drizzle-kit": "latest",
-    "dotenv": "latest",
-    "dotenv-cli": "latest",
-    "typescript": "latest"
-  }
-}
-````
-
 ## File: drizzle/schema.ts
 ````typescript
 import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique, customType } from 'drizzle-orm/pg-core';
@@ -3208,6 +3194,32 @@ export const instanceStateRelations = relations(instanceState, ({ one }) => ({
 export const nodeRelations = relations(nodes, ({ many }) => ({
     instances: many(instances),
 }));
+````
+
+## File: package.json
+````json
+{
+  "name": "whatsapp-gateway-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "gateway",
+    "drizzle"
+  ],
+  "scripts": {
+    "dev": "bun --cwd gateway run dev",
+    "test": "bun --cwd gateway run test",
+    "test:watch": "bun --cwd gateway run test --watch",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "drizzle-kit": "latest",
+    "dotenv": "latest",
+    "dotenv-cli": "latest",
+    "typescript": "latest"
+  }
+}
 ````
 
 ## File: gateway/package.json
