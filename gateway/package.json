@@ -22,5 +22,8 @@
     "elysia": "latest",
     "drizzle-orm": "latest",
     "postgres": "latest"
+  },
+  "testOptions": {
+    "setup": "./tests/setup.ts"
   }
 }

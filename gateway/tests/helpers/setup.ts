@@ -2,7 +2,8 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres, { type Sql } from 'postgres';
 import { getDockerClientForNode, type ContainerInfo } from '../../src/docker.client';
 import * as schema from '../../../drizzle/schema';
-import { app } from '../../src/index';
+import { createApp } from '../../src/app';
+import { testSetup } from '../utils/test-setup';
 
 // --- Types ---
 export type User = typeof schema.users.$inferSelect;
@@ -14,11 +15,9 @@ export type Instance = typeof schema.instances.$inferSelect;
 let client: Sql;
 export let db: PostgresJsDatabase<typeof schema>;
 
-// --- Docker Client ---
-// --- Test Constants ---
-// Bun automatically loads .env, but we provide fallbacks.
-export const TEST_USER_API_KEY = process.env.API_SECRET || 'test-api-key-secret-for-ci';
-export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || 'test-internal-secret-for-ci';
+// --- Test Constants (initialized in setup) ---
+export let TEST_USER_API_KEY: string;
+export let TEST_INTERNAL_API_SECRET: string;
 export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
 export const TEST_NODE_PUBLIC_HOST = 'localhost';
 
@@ -33,15 +32,24 @@ const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST });
  * @returns An object with the server URL and the created user/node entities.
  */
 export const setup = async () => {
+  // Ensure the environment is ready. This is idempotent and safe to call.
+  await testSetup.ensureTestEnvironment();
+
+  const env = testSetup.getEnvironment(); // This will now succeed.
+  TEST_USER_API_KEY = env.API_SECRET;
+  TEST_INTERNAL_API_SECRET = env.INTERNAL_API_SECRET;
+
   // 1. Establish DB connection
-  const connectionString = process.env.DATABASE_URL;
+  // Use the connection string from the now-initialized environment
+  const connectionString = env.DATABASE_URL;
   if (!connectionString) {
     throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
   }
   client = postgres(connectionString);
   db = drizzle(client, { schema });
 
-  // 2. Start server on a random available port by passing 0.
+  // 2. Create app with database and start server on a random available port
+  const app = createApp(db);
   await app.listen(0);
 
   // 3. Clean database before seeding to ensure a fresh state.
@@ -49,7 +57,7 @@ export const setup = async () => {
   await db.delete(schema.instances);
   await db.delete(schema.users);
   await db.delete(schema.nodes);
-  
+
   const [testUser] = await db.insert(schema.users).values({
     email: `test-${Date.now()}@example.com`,
     apiKey: TEST_USER_API_KEY,
@@ -65,6 +73,7 @@ export const setup = async () => {
     serverUrl: `http://localhost:${app.server?.port}`,
     user: testUser,
     node: testNode,
+    app, // Return app instance for teardown
   };
 };
 
@@ -72,12 +81,15 @@ export const setup = async () => {
  * Tears down the test environment:
  * 1. Stops the API server.
  * 2. Closes the database connection.
+ * 3. Cleans up test database and environment.
  */
-export const teardown = async () => {
+export const teardown = async (app: any) => {
   await app.stop();
   if (client) {
     await client.end({ timeout: 5 });
   }
+  // Clean up the test environment (but not the database container)
+  await testSetup.cleanup();
 };
 
 /**
@@ -88,6 +100,26 @@ export const cleanupDb = async () => {
     await db.delete(schema.instanceState);
     await db.delete(schema.instances);
 };
+
+/**
+ * Helper to create a test instance in the database.
+ */
+export async function createTestInstance(
+    db: PostgresJsDatabase<typeof schema>,
+    user: User,
+    node: Node,
+    overrides: Partial<Omit<Instance, 'id' | 'userId' | 'nodeId'>> = {}
+): Promise<Instance> {
+    const [instance] = await db.insert(schema.instances).values({
+        nodeId: node.id,
+        userId: user.id,
+        phoneNumber: '9876543210',
+        provider: 'whatsmeow',
+        status: 'running', // Default to running for most API tests
+        ...overrides,
+    }).returning();
+    return instance;
+}
 
 /**
  * Finds and removes all Docker containers created by the tests.

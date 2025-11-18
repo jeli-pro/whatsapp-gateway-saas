@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
-import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from '../helpers/setup';
+import { db, setup, teardown, cleanupDb, createTestInstance, TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from '../helpers/setup';
 import * as schema from '../../../drizzle/schema';
 import { eq, and } from 'drizzle-orm';
 
@@ -8,27 +8,25 @@ describe('E2E - Internal State API', () => {
     let testInstance: Instance;
     let testUser: User;
     let testNode: Node;
+    let appInstance: any;
 
     beforeAll(async () => {
         const setupResult = await setup();
         serverUrl = setupResult.serverUrl;
         testUser = setupResult.user;
         testNode = setupResult.node;
+        appInstance = setupResult.app;
     });
 
     afterAll(async () => {
-        await teardown();
+        if (appInstance) {
+            await teardown(appInstance);
+        }
     });
 
     beforeEach(async () => {
         // Create a test instance record directly in the DB for these tests
-        [testInstance] = await db.insert(schema.instances).values({
-            nodeId: testNode.id,
-            userId: testUser.id,
-            phoneNumber: '9876543210',
-            provider: 'whatsmeow',
-            status: 'running',
-        }).returning();
+        testInstance = await createTestInstance(db, testUser, testNode);
     });
 
     afterEach(async () => {
@@ -39,7 +37,13 @@ describe('E2E - Internal State API', () => {
         const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
         expect(res.status).toBe(401);
 
-        const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, { method: 'POST' });
+        const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/octet-stream',
+            },
+            body: Buffer.from('test data')
+        });
         expect(postRes.status).toBe(401);
     });
 

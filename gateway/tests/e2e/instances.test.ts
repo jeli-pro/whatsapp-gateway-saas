@@ -5,16 +5,20 @@ import { eq } from 'drizzle-orm';
 
 describe('E2E - Instance Management API', () => {
     let serverUrl: string;
+    let appInstance: any;
 
     beforeAll(async () => {
         const setupResult = await setup();
         serverUrl = setupResult.serverUrl;
+        appInstance = setupResult.app;
     });
 
     afterAll(async () => {
         // Final cleanup after all tests in this file run
         await cleanupContainers();
-        await teardown();
+        if (appInstance) {
+            await teardown(appInstance);
+        }
     });
 
     afterEach(async () => {

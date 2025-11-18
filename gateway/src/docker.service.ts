@@ -79,9 +79,9 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
         },
         HostConfig: {
             RestartPolicy: { Name: 'unless-stopped' },
-            Memory: parseMemory(options.memoryLimit), 
+            Memory: parseMemory(options.memoryLimit),
             NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
-            NetworkMode: 'worker-net', // Connect to the shared traefik network
+            NetworkMode: process.env.NODE_ENV === 'test' ? 'bridge' : 'worker-net', // Use bridge network for tests
         },
     });
 

@@ -1,3 +1,7 @@
+===
+
+I want DRY in tests/ dir because many redundant setup, also fix below fail
+
 === DOING
 
 based on readme.md , implement test cases . codebase compliance rules;

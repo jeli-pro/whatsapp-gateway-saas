@@ -1,0 +1,956 @@
+uuid: 442531cd-b4b1-4f10-9289-53b9222c5e53
+projectId: whatsapp-gateway-saas
+createdAt: '2025-11-18T02:19:25.584Z'
+gitCommitMsg: >-
+  refactor(tests): Centralize test config to fix auth bug and improve DRY
+
+  Refactored the entire test setup to use a single source of truth for
+  environment variables, managed by the `TestSetup` singleton.
+
+  This resolves a bug in `state.test.ts` where a `401 Unauthorized` error
+  occurred due to an inconsistent `INTERNAL_API_SECRET` between the test client
+  and the server.
+
+  Key changes: - Removed the redundant `gateway/.env.test` and unified
+  configuration in
+    the root `.env.test`.
+  - The `TestSetup` class now caches and provides the environment config. -
+  `helpers/setup.ts` consumes this config, ensuring consistency. - Added a
+  `createTestInstance` helper to reduce boilerplate in E2E tests.
+promptSummary: >-
+  I want to make my test setup more DRY and fix a failing test caused by an
+  authentication error.
+reasoning:
+  - >-
+    I understand the issues with the test suite. The failing test is a classic
+    symptom of inconsistent environment configurations between the test runner
+    and the application server, and the redundant setup code makes maintenance
+    difficult.
+  - >-
+    I will perform a comprehensive refactor to centralize the test
+    configuration, which will resolve the authentication bug and improve the
+    overall structure of the tests by adhering to the DRY (Don't Repeat
+    Yourself) principle.
+  - '### Part 1: Centralize Test Configuration and Fix Auth Bug'
+  - >-
+    First, I'll eliminate the conflicting `.env.test` files and establish
+    `TestSetup` as the single source of truth for all test environment
+    variables. This change is the key to fixing the `401 Unauthorized` error.
+  - I am deleting the redundant environment file in the `gateway` directory.
+  - >-
+    Next, I am aligning the secrets in the root `.env.test` file to match the
+    values used programmatically in the test setup. This ensures consistency.
+  - >-
+    Now, I will enhance the `TestSetup` singleton to cache the environment
+    configuration it creates. This allows other parts of the test suite to
+    reliably access the correct configuration after initialization.
+  - >-
+    With the singleton updated, I will refactor the main test helper,
+    `helpers/setup.ts`. It will now pull its configuration from `TestSetup`
+    instead of defining its own constants. I'm also adding a new helper function
+    `createTestInstance` to reduce boilerplate in the E2E tests.
+  - '### Part 2: Apply Refactoring to E2E Tests'
+  - >-
+    Now that the foundation is solid, I will apply these changes to the failing
+    `state.test.ts`. This will simplify the test setup and, by using the
+    correctly initialized `TEST_INTERNAL_API_SECRET`, fix the authentication
+    error.
+  - >-
+    The `instances.test.ts` file already uses the `TEST_USER_API_KEY` from the
+    helper file, so it will automatically benefit from this refactoring without
+    needing any code changes. All tests should now pass reliably.
+  - '---'
+operations:
+  - type: delete
+    path: gateway/.env.test
+  - type: write
+    path: .env.test
+    content: >+
+      --- .env.test
+
+      +++ .env.test
+
+      @@ -1,4 +1,4 @@
+       DATABASE_URL="postgresql://test_user:test_password@localhost:5433/test_db"
+      -API_SECRET="your-super-secret-api-key"
+
+      -INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+
+      +API_SECRET="test-api-key-secret-for-ci"
+
+      +INTERNAL_API_SECRET="test-internal-secret-for-ci"
+       GATEWAY_URL="http://host.docker.internal:3000"
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/utils/test-setup.ts
+    content: >+
+      --- gateway/tests/utils/test-setup.ts
+
+      +++ gateway/tests/utils/test-setup.ts
+
+      @@ -16,6 +16,7 @@
+         private db: any = null;
+         private envFileCreated = false;
+         private migrationsRun = false;
+      +  private env: TestEnvironment | null = null;
+       
+         private constructor() {}
+       
+      @@ -26,6 +27,13 @@
+           return TestSetup.instance;
+         }
+       
+      +  public getEnvironment(): TestEnvironment {
+
+      +    if (!this.env) {
+
+      +      throw new Error('Test environment is not initialized. Call
+      ensureTestEnvironment() first.');
+
+      +    }
+
+      +    return this.env;
+
+      +  }
+
+      +
+         /**
+          * Ensures the test environment is properly set up
+          */
+      @@ -58,6 +66,9 @@
+           Object.entries(env).forEach(([key, value]) => {
+             process.env[key] = value;
+           });
+      +
+
+      +    // Store for later retrieval
+
+      +    this.env = env;
+       
+           // Create .env.test file if it doesn't exist
+           const gatewayDir = join(process.cwd());
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/helpers/setup.ts
+    content: >+
+      --- gateway/tests/helpers/setup.ts
+
+      +++ gateway/tests/helpers/setup.ts
+
+      @@ -13,11 +13,11 @@
+       let client: Sql;
+       export let db: PostgresJsDatabase<typeof schema>;
+       
+      -// --- Test Constants ---
+
+      -// Bun automatically loads .env, but we provide fallbacks.
+
+      -export const TEST_USER_API_KEY = process.env.API_SECRET ||
+      'test-api-key-secret-for-ci';
+
+      -export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET
+      || 'test-internal-secret-for-ci';
+
+      +// --- Test Constants (initialized in setup) ---
+
+      +export let TEST_USER_API_KEY: string;
+
+      +export let TEST_INTERNAL_API_SECRET: string;
+       export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST || 'unix:///var/run/docker.sock';
+       export const TEST_NODE_PUBLIC_HOST = 'localhost';
+       
+      @@ -32,11 +32,15 @@
+        * @returns An object with the server URL and the created user/node entities.
+        */
+       export const setup = async () => {
+      -  // Ensure test environment is properly set up
+
+      -  await testSetup.ensureTestEnvironment();
+
+      +  // The global beforeAll in setup.ts calls ensureTestEnvironment.
+
+      +  // We retrieve the config here to ensure it's fully initialized.
+
+      +  const env = testSetup.getEnvironment();
+
+      +  TEST_USER_API_KEY = env.API_SECRET;
+
+      +  TEST_INTERNAL_API_SECRET = env.INTERNAL_API_SECRET;
+       
+         // 1. Establish DB connection
+      -  const connectionString = process.env.DATABASE_URL;
+
+      +  // Use the connection string from the now-initialized environment
+
+      +  const connectionString = env.DATABASE_URL;
+         if (!connectionString) {
+           throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
+         }
+      @@ -91,6 +95,26 @@
+           await db.delete(schema.instances);
+       };
+       
+      +/**
+
+      + * Helper to create a test instance in the database.
+
+      + */
+
+      +export async function createTestInstance(
+
+      +    db: PostgresJsDatabase<typeof schema>,
+
+      +    user: User,
+
+      +    node: Node,
+
+      +    overrides: Partial<Omit<Instance, 'id' | 'userId' | 'nodeId'>> = {}
+
+      +): Promise<Instance> {
+
+      +    const [instance] = await db.insert(schema.instances).values({
+
+      +        nodeId: node.id,
+
+      +        userId: user.id,
+
+      +        phoneNumber: '9876543210',
+
+      +        provider: 'whatsmeow',
+
+      +        status: 'running', // Default to running for most API tests
+
+      +        ...overrides,
+
+      +    }).returning();
+
+      +    return instance;
+
+      +}
+
+      +
+       /**
+        * Finds and removes all Docker containers created by the tests.
+        */
+
+    patchStrategy: standard-diff
+  - type: write
+    path: gateway/tests/e2e/state.test.ts
+    content: >+
+      --- gateway/tests/e2e/state.test.ts
+
+      +++ gateway/tests/e2e/state.test.ts
+
+      @@ -1,5 +1,5 @@
+       import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+      -import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type
+      User, type Node, type Instance } from '../helpers/setup';
+
+      +import { db, setup, teardown, cleanupDb, createTestInstance,
+      TEST_INTERNAL_API_SECRET, type User, type Node, type Instance } from
+      '../helpers/setup';
+       import * as schema from '../../../drizzle/schema';
+       import { eq, and } from 'drizzle-orm';
+       
+      @@ -23,13 +23,7 @@
+       
+           beforeEach(async () => {
+               // Create a test instance record directly in the DB for these tests
+      -        [testInstance] = await db.insert(schema.instances).values({
+
+      -            nodeId: testNode.id,
+
+      -            userId: testUser.id,
+
+      -            phoneNumber: '9876543210',
+
+      -            provider: 'whatsmeow',
+
+      -            status: 'running',
+
+      -        }).returning();
+
+      +        testInstance = await createTestInstance(db, testUser, testNode);
+           });
+       
+           afterEach(async () => {
+
+    patchStrategy: standard-diff
+snapshot:
+  .env.test: |-
+    DATABASE_URL="postgresql://test_user:test_password@localhost:5433/test_db"
+    API_SECRET="your-super-secret-api-key"
+    INTERNAL_API_SECRET="a-different-and-very-strong-secret-for-internal-comms"
+    GATEWAY_URL="http://host.docker.internal:3000"
+  gateway/tests/utils/test-setup.ts: |-
+    import { spawn } from 'child_process';
+    import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+    import { join } from 'path';
+    import { drizzle } from 'drizzle-orm/postgres-js';
+    import postgres, { type Sql } from 'postgres';
+    import * as schema from '../../../drizzle/schema';
+    import { promises as fs } from 'fs';
+
+    export interface TestEnvironment {
+      DATABASE_URL: string;
+      INTERNAL_API_SECRET: string;
+      API_SECRET: string;
+      GATEWAY_URL: string;
+      NODE_ENV: string;
+    }
+
+    export class TestSetup {
+      private static instance: TestSetup;
+      private dbConnection: Sql | null = null;
+      private db: any = null;
+      private envFileCreated = false;
+      private migrationsRun = false;
+
+      private constructor() {}
+
+      public static getInstance(): TestSetup {
+        if (!TestSetup.instance) {
+          TestSetup.instance = new TestSetup();
+        }
+        return TestSetup.instance;
+      }
+
+      /**
+       * Ensures the test environment is properly set up
+       */
+      public async ensureTestEnvironment(): Promise<TestEnvironment> {
+        console.log('🔧 Setting up test environment...');
+
+        // Set up environment variables
+        const env = await this.setupEnvironment();
+
+        // Start test database if needed
+        await this.ensureTestDatabase();
+
+        // Set up database schema
+        await this.ensureDatabaseSchema();
+
+        console.log('✅ Test environment ready');
+        return env;
+      }
+
+      /**
+       * Sets up the test environment variables
+       */
+      private async setupEnvironment(): Promise<TestEnvironment> {
+        const env: TestEnvironment = {
+          DATABASE_URL: 'postgresql://test_user:test_password@localhost:5433/test_db',
+          INTERNAL_API_SECRET: 'test-internal-secret-for-ci',
+          API_SECRET: 'test-api-key-secret-for-ci',
+          GATEWAY_URL: 'http://localhost:3000',
+          NODE_ENV: 'test'
+        };
+
+        // Set environment variables
+        Object.entries(env).forEach(([key, value]) => {
+          process.env[key] = value;
+        });
+
+        // Create .env.test file if it doesn't exist
+        const gatewayDir = join(process.cwd());
+        const envTestPath = join(gatewayDir, '.env.test');
+
+        if (!existsSync(envTestPath)) {
+          const envContent = Object.entries(env)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('\n');
+
+          await fs.writeFile(envTestPath, envContent);
+          this.envFileCreated = true;
+          console.log('📝 Created .env.test file');
+        }
+
+        return env;
+      }
+
+      /**
+       * Ensures test database is running and accessible
+       */
+      private async ensureTestDatabase(): Promise<void> {
+        console.log('🗄️  Checking test database...');
+
+        try {
+          // Try to connect to the database
+          const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
+          await client`SELECT 1`;
+          await client.end();
+          console.log('✅ Test database is accessible');
+          return;
+        } catch (error) {
+          console.log('⚠️  Test database not accessible, starting it...');
+          await this.startTestDatabase();
+        }
+      }
+
+      /**
+       * Starts the test database using Docker
+       */
+      private async startTestDatabase(): Promise<void> {
+        return new Promise((resolve, reject) => {
+          console.log('🐳 Starting test database container...');
+
+          // Stop existing container if it exists
+          const stopCmd = spawn('docker', [
+            'stop', 'whatsapp-gateway-saas-test-db'
+          ], { stdio: 'pipe' });
+
+          stopCmd.on('close', () => {
+            const rmCmd = spawn('docker', [
+              'rm', 'whatsapp-gateway-saas-test-db'
+            ], { stdio: 'pipe' });
+
+            rmCmd.on('close', () => {
+              const runCmd = spawn('docker', [
+                'run', '-d',
+                '--name', 'whatsapp-gateway-saas-test-db',
+                '-e', 'POSTGRES_USER=test_user',
+                '-e', 'POSTGRES_PASSWORD=test_password',
+                '-e', 'POSTGRES_DB=test_db',
+                '-p', '5433:5432',
+                '--restart', 'unless-stopped',
+                'postgres:16-alpine'
+              ], { stdio: 'pipe' });
+
+              runCmd.on('close', (code) => {
+                if (code === 0) {
+                  console.log('✅ Test database container started');
+                  this.waitForDatabase().then(resolve).catch(reject);
+                } else {
+                  reject(new Error('Failed to start test database container'));
+                }
+              });
+
+              runCmd.on('error', reject);
+            });
+
+            rmCmd.on('error', (error) => {
+              // Container might not exist, which is fine
+              console.log('ℹ️  No existing container to remove');
+              const runCmd = spawn('docker', [
+                'run', '-d',
+                '--name', 'whatsapp-gateway-saas-test-db',
+                '-e', 'POSTGRES_USER=test_user',
+                '-e', 'POSTGRES_PASSWORD=test_password',
+                '-e', 'POSTGRES_DB=test_db',
+                '-p', '5433:5432',
+                '--restart', 'unless-stopped',
+                'postgres:16-alpine'
+              ], { stdio: 'pipe' });
+
+              runCmd.on('close', (code) => {
+                if (code === 0) {
+                  console.log('✅ Test database container started');
+                  this.waitForDatabase().then(resolve).catch(reject);
+                } else {
+                  reject(new Error('Failed to start test database container'));
+                }
+              });
+
+              runCmd.on('error', reject);
+            });
+          });
+
+          stopCmd.on('error', (error) => {
+            // Container might not exist, which is fine
+            console.log('ℹ️  No existing container to stop');
+          });
+        });
+      }
+
+      /**
+       * Waits for the database to be ready
+       */
+      private async waitForDatabase(): Promise<void> {
+        console.log('⏳ Waiting for database to be ready...');
+
+        for (let i = 0; i < 30; i++) {
+          try {
+            const client = postgres(process.env.DATABASE_URL!, { timeout: 5000 });
+            await client`SELECT 1`;
+            await client.end();
+            console.log('✅ Database is ready');
+            return;
+          } catch (error) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+
+        throw new Error('Database failed to become ready within 30 seconds');
+      }
+
+      /**
+       * Ensures the database schema is set up
+       */
+      private async ensureDatabaseSchema(): Promise<void> {
+        if (this.migrationsRun) {
+          return;
+        }
+
+        console.log('🗃️  Setting up database schema...');
+
+        try {
+          // Try to connect and check if tables exist
+          await this.connectToDatabase();
+
+          // Check if tables exist by trying to query one of them
+          try {
+            await this.db.query.users.findFirst();
+            console.log('✅ Database schema already exists');
+            this.migrationsRun = true;
+            return;
+          } catch (error) {
+            // Tables don't exist, need to run migrations
+            console.log('🔄 Database schema needs to be created');
+          }
+
+          // Run migrations
+          await this.runMigrations();
+          this.migrationsRun = true;
+          console.log('✅ Database schema created successfully');
+
+        } catch (error) {
+          console.error('❌ Failed to set up database schema:', error);
+          throw error;
+        }
+      }
+
+      /**
+       * Connects to the database
+       */
+      private async connectToDatabase(): Promise<void> {
+        if (this.dbConnection) {
+          return;
+        }
+
+        this.dbConnection = postgres(process.env.DATABASE_URL!);
+        this.db = drizzle(this.dbConnection, { schema });
+      }
+
+      /**
+       * Runs database migrations
+       */
+      private async runMigrations(): Promise<void> {
+        console.log('📦 Running database migrations...');
+
+        return new Promise((resolve, reject) => {
+          const { spawn } = require('child_process');
+
+          // First, generate migrations if they don't exist
+          const generateCmd = spawn('npx', ['drizzle-kit', 'generate'], {
+            cwd: join(process.cwd(), '..'),
+            stdio: 'pipe'
+          });
+
+          generateCmd.on('close', (code) => {
+            if (code === 0) {
+              console.log('✅ Migrations generated');
+
+              // Then run the migrations
+              const migrateCmd = spawn('npx', ['drizzle-kit', 'migrate'], {
+                cwd: join(process.cwd(), '..'),
+                stdio: 'pipe'
+              });
+
+              migrateCmd.on('close', (code) => {
+                if (code === 0) {
+                  console.log('✅ Migrations applied successfully');
+                  resolve();
+                } else {
+                  reject(new Error('Migration failed'));
+                }
+              });
+
+              migrateCmd.on('error', reject);
+            } else {
+              reject(new Error('Migration generation failed'));
+            }
+          });
+
+          generateCmd.on('error', reject);
+        });
+      }
+
+      /**
+       * Gets the database connection for tests
+       */
+      public async getDb() {
+        if (!this.db) {
+          await this.connectToDatabase();
+        }
+        return this.db;
+      }
+
+      /**
+       * Cleans up the test environment
+       */
+      public async cleanup(): Promise<void> {
+        console.log('🧹 Cleaning up test environment...');
+
+        if (this.dbConnection) {
+          try {
+            await this.dbConnection.end({ timeout: 5 });
+            this.dbConnection = null;
+            this.db = null;
+          } catch (error) {
+            console.warn('⚠️  Failed to close database connection:', error);
+          }
+        }
+
+        if (this.envFileCreated) {
+          try {
+            const gatewayDir = join(process.cwd());
+            const envTestPath = join(gatewayDir, '.env.test');
+            await fs.unlink(envTestPath);
+            console.log('🗑️  Removed .env.test file');
+            this.envFileCreated = false; // Reset for next test run
+          } catch (error) {
+            console.warn('⚠️  Failed to remove .env.test file:', error);
+          }
+        }
+
+        // Only clean up database container if explicitly requested or no other tests are running
+        // This prevents cleanup conflicts when multiple test files are running
+      }
+
+      /**
+       * Force cleanup of database container (for explicit cleanup only)
+       */
+      public async forceCleanup(): Promise<void> {
+        console.log('🧹 Force cleaning up test environment...');
+
+        if (this.dbConnection) {
+          try {
+            await this.dbConnection.end({ timeout: 5 });
+            this.dbConnection = null;
+            this.db = null;
+          } catch (error) {
+            console.warn('⚠️  Failed to close database connection:', error);
+          }
+        }
+
+        if (this.envFileCreated) {
+          try {
+            const gatewayDir = join(process.cwd());
+            const envTestPath = join(gatewayDir, '.env.test');
+            await fs.unlink(envTestPath);
+            console.log('🗑️  Removed .env.test file');
+          } catch (error) {
+            console.warn('⚠️  Failed to remove .env.test file:', error);
+          }
+        }
+
+        // Stop test database container
+        try {
+          const { spawn } = require('child_process');
+          const stopCmd = spawn('docker', ['stop', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
+
+          stopCmd.on('close', () => {
+            const rmCmd = spawn('docker', ['rm', 'whatsapp-gateway-saas-test-db'], { stdio: 'pipe' });
+            rmCmd.on('close', () => {
+              console.log('✅ Test database container stopped and removed');
+            });
+          });
+        } catch (error) {
+          console.warn('⚠️  Failed to clean up test database container:', error);
+        }
+      }
+    }
+
+    // Export singleton instance
+    export const testSetup = TestSetup.getInstance();
+  gateway/tests/e2e/state.test.ts: >-
+    import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach
+    } from 'bun:test';
+
+    import { db, setup, teardown, cleanupDb, TEST_INTERNAL_API_SECRET, type
+    User, type Node, type Instance } from '../helpers/setup';
+
+    import * as schema from '../../../drizzle/schema';
+
+    import { eq, and } from 'drizzle-orm';
+
+
+    describe('E2E - Internal State API', () => {
+        let serverUrl: string;
+        let testInstance: Instance;
+        let testUser: User;
+        let testNode: Node;
+        let appInstance: any;
+
+        beforeAll(async () => {
+            const setupResult = await setup();
+            serverUrl = setupResult.serverUrl;
+            testUser = setupResult.user;
+            testNode = setupResult.node;
+            appInstance = setupResult.app;
+        });
+
+        afterAll(async () => {
+            if (appInstance) {
+                await teardown(appInstance);
+            }
+        });
+
+        beforeEach(async () => {
+            // Create a test instance record directly in the DB for these tests
+            [testInstance] = await db.insert(schema.instances).values({
+                nodeId: testNode.id,
+                userId: testUser.id,
+                phoneNumber: '9876543210',
+                provider: 'whatsmeow',
+                status: 'running',
+            }).returning();
+        });
+
+        afterEach(async () => {
+            await cleanupDb();
+        });
+
+        test('should reject access without the internal secret', async () => {
+            const res = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`);
+            expect(res.status).toBe(401);
+
+            const postRes = await fetch(`${serverUrl}/internal/state/${testInstance.id}/snapshot`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                },
+                body: Buffer.from('test data')
+            });
+            expect(postRes.status).toBe(401);
+        });
+
+        test('should upload and download a state snapshot', async () => {
+            const instanceId = testInstance.id;
+            const snapshotData = Buffer.from(`this is a binary test snapshot payload for instance ${instanceId}`);
+
+            // 1. Upload Snapshot
+            const uploadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+                method: 'POST',
+                headers: {
+                    'X-Internal-Secret': TEST_INTERNAL_API_SECRET,
+                    'Content-Type': 'application/octet-stream',
+                },
+                body: snapshotData,
+            });
+            
+            expect(uploadResponse.status).toBe(204);
+
+            // 2. Verify the snapshot was saved correctly in the database
+            const dbState = await db.query.instanceState.findFirst({
+                where: and(
+                    eq(schema.instanceState.instanceId, instanceId),
+                    eq(schema.instanceState.key, 'session_snapshot')
+                ),
+            });
+            expect(dbState).toBeDefined();
+            expect(dbState?.value).toEqual(snapshotData);
+
+            // 3. Download the snapshot
+            const downloadResponse = await fetch(`${serverUrl}/internal/state/${instanceId}/snapshot`, {
+                headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+            });
+
+            expect(downloadResponse.status).toBe(200);
+            expect(downloadResponse.headers.get('content-type')).toBe('application/octet-stream');
+            
+            const downloadedData = Buffer.from(await downloadResponse.arrayBuffer());
+            expect(downloadedData).toEqual(snapshotData);
+
+            // 4. Test GET for a non-existent snapshot returns 404
+            const notFoundResponse = await fetch(`${serverUrl}/internal/state/999999/snapshot`, {
+                 headers: { 'X-Internal-Secret': TEST_INTERNAL_API_SECRET }
+            });
+            expect(notFoundResponse.status).toBe(404);
+        });
+    });
+  gateway/tests/helpers/setup.ts: >-
+    import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+
+    import postgres, { type Sql } from 'postgres';
+
+    import { getDockerClientForNode, type ContainerInfo } from
+    '../../src/docker.client';
+
+    import * as schema from '../../../drizzle/schema';
+
+    import { createApp } from '../../src/app';
+
+    import { testSetup } from '../utils/test-setup';
+
+
+    // --- Types ---
+
+    export type User = typeof schema.users.$inferSelect;
+
+    export type Node = typeof schema.nodes.$inferSelect;
+
+    export type Instance = typeof schema.instances.$inferSelect;
+
+
+    // --- DB Connection ---
+
+    // These are initialized in setup() to prevent connection attempts before
+    the test DB is ready.
+
+    let client: Sql;
+
+    export let db: PostgresJsDatabase<typeof schema>;
+
+
+    // --- Test Constants ---
+
+    // Bun automatically loads .env, but we provide fallbacks.
+
+    export const TEST_USER_API_KEY = process.env.API_SECRET ||
+    'test-api-key-secret-for-ci';
+
+    export const TEST_INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET ||
+    'test-internal-secret-for-ci';
+
+    export const TEST_NODE_DOCKER_HOST = process.env.TEST_DOCKER_HOST ||
+    'unix:///var/run/docker.sock';
+
+    export const TEST_NODE_PUBLIC_HOST = 'localhost';
+
+
+    const docker = getDockerClientForNode({ dockerHost: TEST_NODE_DOCKER_HOST
+    });
+
+
+
+    /**
+     * Sets up the test environment:
+     * 1. Establishes DB connection.
+     * 2. Starts the API server on a random available port.
+     * 3. Cleans and seeds the database with a test user and a test node.
+     * @returns An object with the server URL and the created user/node entities.
+     */
+    export const setup = async () => {
+      // Ensure test environment is properly set up
+      await testSetup.ensureTestEnvironment();
+
+      // 1. Establish DB connection
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) {
+        throw new Error("DATABASE_URL is not set. Please create a .env.test file.");
+      }
+      client = postgres(connectionString);
+      db = drizzle(client, { schema });
+
+      // 2. Create app with database and start server on a random available port
+      const app = createApp(db);
+      await app.listen(0);
+
+      // 3. Clean database before seeding to ensure a fresh state.
+      await db.delete(schema.instanceState);
+      await db.delete(schema.instances);
+      await db.delete(schema.users);
+      await db.delete(schema.nodes);
+
+      const [testUser] = await db.insert(schema.users).values({
+        email: `test-${Date.now()}@example.com`,
+        apiKey: TEST_USER_API_KEY,
+      }).returning();
+
+      const [testNode] = await db.insert(schema.nodes).values({
+        name: 'test-node-1',
+        dockerHost: TEST_NODE_DOCKER_HOST,
+        publicHost: TEST_NODE_PUBLIC_HOST,
+      }).returning();
+
+      return {
+        serverUrl: `http://localhost:${app.server?.port}`,
+        user: testUser,
+        node: testNode,
+        app, // Return app instance for teardown
+      };
+    };
+
+
+    /**
+     * Tears down the test environment:
+     * 1. Stops the API server.
+     * 2. Closes the database connection.
+     * 3. Cleans up test database and environment.
+     */
+    export const teardown = async (app: any) => {
+      await app.stop();
+      if (client) {
+        await client.end({ timeout: 5 });
+      }
+      // Clean up the test environment (but not the database container)
+      await testSetup.cleanup();
+    };
+
+
+    /**
+     * Removes all instance-related records from the database.
+     */
+    export const cleanupDb = async () => {
+        // db is guaranteed to be initialized by setup() in beforeAll
+        await db.delete(schema.instanceState);
+        await db.delete(schema.instances);
+    };
+
+
+    /**
+     * Finds and removes all Docker containers created by the tests.
+     */
+    export const cleanupContainers = async () => {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id`] }
+        });
+
+        for (const containerInfo of containers) {
+            console.log(`Cleaning up test container: ${containerInfo.Id}`);
+            try {
+                await docker.stopContainer(containerInfo.Id, { t: 5 });
+            } catch (e: any) {
+                // Ignore if already stopped (304) or not found (404)
+                if (e.statusCode !== 304 && e.statusCode !== 404) console.error(e);
+            }
+            try {
+                await docker.removeContainer(containerInfo.Id);
+            } catch (e: any) {
+                 // Ignore if not found (404)
+                if (e.statusCode !== 404) console.error(e);
+            }
+        }
+    };
+
+
+    /**
+     * Test helper to find a container by its instance ID label.
+     * @param instanceId The ID of the instance.
+     * @returns ContainerInfo if found, otherwise undefined.
+     */
+    export async function findContainerByInstanceId(instanceId: number):
+    Promise<ContainerInfo | undefined> {
+        const containers = await docker.listContainers({
+            all: true,
+            filters: { label: [`whatsapp-gateway-saas.instance-id=${instanceId}`] }
+        });
+        return containers[0];
+    }
+  gateway/.env.test: |-
+    DATABASE_URL=postgresql://test_user:test_password@localhost:5433/test_db
+    INTERNAL_API_SECRET=test-internal-secret-for-ci
+    API_SECRET=test-api-key-secret-for-ci
+    GATEWAY_URL=http://localhost:3000
+    NODE_ENV=test
+approved: true
+linesAdded: 45
+linesRemoved: 22
+linesDifference: 67
+gitCommittedAt: null
+status: committed
+id: 23
