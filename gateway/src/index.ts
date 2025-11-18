@@ -1,9 +1,9 @@
 import { Elysia, t } from 'elysia';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, not } from 'drizzle-orm';
 import postgres from 'postgres';
 import * as schema from '../../drizzle/schema';
-import { createAndStartContainer, findContainer, stopAndRemoveContainer, docker } from './docker.service';
+import { createAndStartContainer, stopAndRemoveContainer, type WorkerNode } from './docker.service';
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -13,14 +13,13 @@ if (!connectionString) {
 const client = postgres(connectionString);
 const db = drizzle(client, { schema });
 
-// A simple proxy to fetch data from a container
-async function proxyToContainer(containerIp: string, path: string, options?: RequestInit) {
-    const url = `http://${containerIp}:8080${path}`;
+// A simple proxy to fetch data from an instance via its public URL
+async function proxyToInstance(instanceUrl: string, options?: RequestInit) {
     try {
-        const response = await fetch(url, options);
+        const response = await fetch(instanceUrl, options);
         return response;
     } catch (e) {
-        console.error(`Failed to proxy request to ${url}`, e);
+        console.error(`Failed to proxy request to ${instanceUrl}`, e);
         return null;
     }
 }
@@ -51,8 +50,17 @@ const app = new Elysia()
         }
     })
     .post('/instances', async ({ body, set, user }) => {
+        // Select a node for the new instance. Simple round-robin or first-available logic.
+        // For now, just pick the first one.
+        const [node] = await db.select().from(schema.nodes).limit(1);
+        if (!node) {
+            set.status = 503;
+            return { error: 'No available worker nodes to schedule instance.' };
+        }
+
         // user is guaranteed to be non-null by the onBeforeHandle guard.
         const [newInstance] = await db.insert(schema.instances).values({
+            nodeId: node.id,
             userId: user!.id, 
             name: body.name,
             phoneNumber: body.phone,
@@ -71,6 +79,7 @@ const app = new Elysia()
         try {
             await createAndStartContainer({
                 instanceId: newInstance.id,
+                node: node,
                 name: newInstance.name,
                 webhookUrl: newInstance.webhookUrl || '',
                 cpuLimit: newInstance.cpuLimit || '0.5',
@@ -110,38 +119,27 @@ const app = new Elysia()
     .get('/instances/:id/qr', async ({ params, set, user }) => {
         const instanceId = parseInt(params.id, 10);
 
-        // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        // Ownership check and fetch instance with its node
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const container = await findContainer(instanceId);
-
-        if (!container || container.State !== 'running') {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        
-        const containerInfo = await docker.getContainer(container.Id).inspect();
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
+        if (!instanceData.nodes) {
+            set.status = 500;
+            return { error: 'Instance is not associated with a node.' };
         }
 
-        const qrResponse = await proxyToContainer(ip, '/qr');
+        const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/qr`;
+        const qrResponse = await proxyToInstance(instanceUrl);
         if (!qrResponse) {
             set.status = 503;
             return { error: "Failed to connect to instance container." };
         }
         if (!qrResponse.ok) {
             set.status = qrResponse.status;
-            return { error: `Instance returned an error: ${qrResponse.statusText}`};
+            return qrResponse.body;
         }
         
         // The whatsmeow provider returns a PNG. We need to proxy that correctly.
@@ -152,29 +150,19 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // Ownership check
-        const [instance] = await db.select().from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
-        }
-        const container = await findContainer(instanceId);
-
-        if (!container || container.State !== 'running') {
-            set.status = 404;
-            return { error: 'Instance container not found or not running' };
-        }
-        const containerInfo = await docker.getContainer(container.Id).inspect();
-        const ip = containerInfo.NetworkSettings.IPAddress;
-        if (!ip) {
-             set.status = 500;
-             return { error: "Could not determine container IP address." };
+        if (!instanceData.nodes) {
+            set.status = 500;
+            return { error: 'Instance is not associated with a node.' };
         }
 
-        const sendResponse = await proxyToContainer(ip, '/send', {
+        const instanceUrl = `https://${instanceData.nodes.publicHost}/instances/${instanceId}/send`;
+
+        const sendResponse = await proxyToInstance(instanceUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -196,18 +184,19 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // Ownership check
-        const [instance] = await db.select({ userId: schema.instances.userId }).from(schema.instances).where(eq(schema.instances.id, instanceId));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances) {
             set.status = 404;
             return { error: 'Instance not found' };
         }
-        if (instance.userId !== user!.id) {
-            set.status = 403;
-            return { error: 'Forbidden' };
+        if (!instanceData.nodes) {
+            // Instance exists but node doesn't. Clean up DB record.
+            await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
+            return { message: 'Instance found without a node. Record cleaned up.' };
         }
 
         try {
-            await stopAndRemoveContainer(instanceId);
+            await stopAndRemoveContainer(instanceId, instanceData.nodes);
             await db.delete(schema.instances).where(eq(schema.instances.id, instanceId));
             set.status = 204;
         } catch (error) {
@@ -221,36 +210,49 @@ const app = new Elysia()
         const instanceId = parseInt(params.id, 10);
 
         // 1. Ownership check
-        const [instance] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id)));
-        if (!instance) {
+        const [instanceData] = await db.select().from(schema.instances).where(and(eq(schema.instances.id, instanceId), eq(schema.instances.userId, user!.id))).leftJoin(schema.nodes, eq(schema.instances.nodeId, schema.nodes.id));
+        if (!instanceData || !instanceData.instances || !instanceData.nodes) {
             set.status = 404;
             return { error: 'Instance not found or you do not have permission to access it' };
         }
         
-        console.log(`Starting migration for instance ${instanceId}`);
+        const instance = instanceData.instances;
+        const currentNode = instanceData.nodes;
+
+        // Find a new node to migrate to
+        const [newNode] = await db.select().from(schema.nodes).where(not(eq(schema.nodes.id, currentNode.id))).limit(1);
+        if (!newNode) {
+            set.status = 503;
+            return { error: 'No available node to migrate to.' };
+        }
+
+        console.log(`Starting migration for instance ${instanceId} from node ${currentNode.name} to ${newNode.name}`);
 
         try {
             // 2. Set status to 'migrating'
             await db.update(schema.instances).set({ status: 'migrating' }).where(eq(schema.instances.id, instanceId));
 
             // 3. Stop and remove the old container. This triggers the snapshot upload on the provider.
-            await stopAndRemoveContainer(instanceId);
-            console.log(`Old container for instance ${instanceId} removed.`);
+            await stopAndRemoveContainer(instanceId, currentNode);
+            console.log(`Old container for instance ${instanceId} removed from node ${currentNode.name}.`);
 
             // 4. Create and start a new container. The provider will fetch the snapshot on startup.
             await createAndStartContainer({
                 instanceId: instance.id,
+                node: newNode,
                 name: instance.name,
                 webhookUrl: instance.webhookUrl || '',
                 cpuLimit: instance.cpuLimit || '0.5',
                 memoryLimit: instance.memoryLimit || '512m',
                 provider: instance.provider,
             });
-            console.log(`New container for instance ${instanceId} started.`);
+            console.log(`New container for instance ${instanceId} started on node ${newNode.name}.`);
 
             // 5. Set status back to 'running'
-            const [updatedInstance] = await db.update(schema.instances)
-                .set({ status: 'running' })
+            const [updatedInstance] = await db.update(schema.instances).set({
+                status: 'running',
+                nodeId: newNode.id,
+            })
                 .where(eq(schema.instances.id, instanceId))
                 .returning();
             
@@ -351,28 +353,18 @@ const app = new Elysia()
             set.status = 404;
             return { error: 'Snapshot not found' };
         }
-        // The value is base64 encoded text, decode it and return as binary
+        // The value is a buffer from the bytea column
         set.headers['Content-Type'] = 'application/octet-stream';
-        return Buffer.from(state.value, 'base64');
+        return state.value;
     })
     .post('/state/:instanceId/snapshot', async ({ params, body, set }) => {
         const instanceId = parseInt(params.instanceId, 10);
 
-        // The body is raw bytes, we need to base64 encode it for storing in text field
-        let bodyBuffer: Buffer;
-        if (body instanceof ReadableStream) {
-            bodyBuffer = await new Response(body).arrayBuffer().then(buf => Buffer.from(buf));
-        } else if (Buffer.isBuffer(body)) {
-            bodyBuffer = body;
-        } else if (typeof body === 'string') {
-            bodyBuffer = Buffer.from(body, 'utf-8');
-        } else {
-            bodyBuffer = Buffer.from(JSON.stringify(body), 'utf-8');
-        }
-        const value = bodyBuffer.toString('base64');
+        // Body is an ArrayBuffer, convert it to a Buffer for the DB driver
+        const value = Buffer.from(body);
 
         await db.insert(schema.instanceState)
-            .values({ instanceId, key: 'session_snapshot', value })
+            .values({ instanceId: instanceId, key: 'session_snapshot', value })
             .onConflictDoUpdate({
                 target: [schema.instanceState.instanceId, schema.instanceState.key],
                 set: { value: value }
@@ -380,9 +372,7 @@ const app = new Elysia()
 
         set.status = 204;
     }, {
-        // Allow any content type as we are reading the raw body
-        type: 'none',
-        body: t.Any(),
+        type: 'arrayBuffer', // Elysia will parse the body as ArrayBuffer
     })
   )
   .listen(3000);

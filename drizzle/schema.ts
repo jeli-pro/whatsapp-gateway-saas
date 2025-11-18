@@ -1,5 +1,12 @@
-import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, varchar, timestamp, integer, uniqueIndex, pgEnum, unique, customType } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+export const nodes = pgTable('nodes', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 256 }).notNull().unique(),
+  dockerHost: text('docker_host').notNull(), // e.g., 'tcp://1.2.3.4:2375'
+  publicHost: text('public_host').notNull(), // e.g., 'vps1.example.com'
+});
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -13,6 +20,7 @@ export const instanceStatusEnum = pgEnum('status', ['creating', 'starting', 'run
 
 export const instances = pgTable('instances', {
     id: serial('id').primaryKey(),
+    nodeId: integer('node_id').notNull().references(() => nodes.id, { onDelete: 'restrict' }),
     userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     name: varchar('name', { length: 256 }),
     phoneNumber: varchar('phone_number', { length: 20 }).notNull(),
@@ -28,11 +36,13 @@ export const instances = pgTable('instances', {
     };
 });
 
+const bytea = customType<{ data: Buffer }>({ getSQL: () => 'bytea' });
+
 export const instanceState = pgTable('instance_state', {
     id: serial('id').primaryKey(),
     instanceId: integer('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
     key: varchar('key', { length: 255 }).notNull(),
-    value: text('value').notNull(),
+    value: bytea('value').notNull(),
 }, (table) => {
     return {
         instanceKeyIdx: unique('instance_key_idx').on(table.instanceId, table.key),
@@ -48,6 +58,10 @@ export const instanceRelations = relations(instances, ({ one, many }) => ({
     fields: [instances.userId],
     references: [users.id],
   }),
+  node: one(nodes, {
+    fields: [instances.nodeId],
+    references: [nodes.id],
+  }),
   state: many(instanceState),
 }));
 
@@ -56,4 +70,8 @@ export const instanceStateRelations = relations(instanceState, ({ one }) => ({
         fields: [instanceState.instanceId],
         references: [instances.id],
     }),
+}));
+
+export const nodeRelations = relations(nodes, ({ many }) => ({
+    instances: many(instances),
 }));

@@ -1,6 +1,25 @@
 import Dockerode from 'dockerode';
+import { URL } from 'url';
 
-export const docker = new Dockerode(); // Assumes DOCKER_HOST or default socket path is configured
+// A simple representation of a worker node, passed from the API layer.
+export interface WorkerNode {
+    id: number;
+    dockerHost: string;
+    publicHost: string;
+}
+
+function getDockerClientForNode(node: Pick<WorkerNode, 'dockerHost'>): Dockerode {
+    if (node.dockerHost.startsWith('unix://') || node.dockerHost.startsWith('/')) {
+        return new Dockerode({ socketPath: node.dockerHost.replace('unix://', '') });
+    }
+    if (node.dockerHost.startsWith('tcp://')) {
+        const parsedUrl = new URL(node.dockerHost);
+        return new Dockerode({ host: parsedUrl.hostname, port: parsedUrl.port });
+    }
+    // Fallback for simple host:port
+    const [host, port] = node.dockerHost.split(':');
+    return new Dockerode({ host, port: parseInt(port, 10) });
+}
 
 function getImageForProvider(provider: string): string {
     const imageMap: Record<string, string> = {
@@ -16,6 +35,7 @@ function getImageForProvider(provider: string): string {
 
 interface CreateContainerOptions {
     instanceId: number;
+    node: WorkerNode;
     name?: string | null;
     webhookUrl: string;
     cpuLimit: string;
@@ -29,19 +49,22 @@ function sanitizeForContainerName(name: string): string {
 }
 
 export async function createAndStartContainer(options: CreateContainerOptions) {
+    const docker = getDockerClientForNode(options.node);
     const saneName = sanitizeForContainerName(options.name || '');
     const containerName = options.name 
         ? `wgs-${options.instanceId}-${saneName}`
         : `wgs-instance-${options.instanceId}`;
 
-    console.log(`Creating container ${containerName} for instance ${options.instanceId}`);
+    const routerName = `wgs-instance-${options.instanceId}`;
+
+    console.log(`Creating container ${containerName} for instance ${options.instanceId} on node ${options.node.publicHost}`);
 
     const DOCKER_IMAGE = getImageForProvider(options.provider);
 
-    // 1. Pull the image
-    await pullImage(DOCKER_IMAGE);
+    // 1. Pull the image on the target node
+    await pullImage(DOCKER_IMAGE, options.node);
 
-    const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:3000';
+    const gatewayUrl = process.env.GATEWAY_URL; // Should be reachable from worker nodes
     const internalApiSecret = process.env.INTERNAL_API_SECRET;
 
     // 2. Create the container
@@ -58,11 +81,21 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
         ],
         Labels: {
             'whatsapp-gateway-saas.instance-id': String(options.instanceId),
+            // Traefik Labels for reverse proxying
+            'traefik.enable': 'true',
+            [`traefik.http.routers.${routerName}.rule`]: `Host(\`${options.node.publicHost}\`) && PathPrefix(\`/instances/${options.instanceId}\`)`,
+            [`traefik.http.routers.${routerName}.entrypoints`]: 'websecure',
+            [`traefik.http.routers.${routerName}.tls.certresolver`]: 'myresolver',
+            [`traefik.http.services.${routerName}.loadbalancer.server.port`]: '8080',
+            // Middleware to strip the prefix, so /instances/123/qr becomes /qr for the container
+            [`traefik.http.middlewares.${routerName}-stripprefix.stripprefix.prefixes`]: `/instances/${options.instanceId}`,
+            [`traefik.http.routers.${routerName}.middlewares`]: `${routerName}-stripprefix`,
         },
         HostConfig: {
             RestartPolicy: { Name: 'unless-stopped' },
             Memory: parseMemory(options.memoryLimit), 
             NanoCpus: parseFloat(options.cpuLimit || '0') * 1e9,
+            NetworkMode: 'worker-net', // Connect to the shared traefik network
         },
     });
 
@@ -73,11 +106,12 @@ export async function createAndStartContainer(options: CreateContainerOptions) {
     return container.inspect();
 }
 
-export async function stopAndRemoveContainer(instanceId: number) {
+export async function stopAndRemoveContainer(instanceId: number, node: WorkerNode) {
+    const docker = getDockerClientForNode(node);
     try {
-        const container = await findContainer(instanceId);
+        const container = await findContainer(instanceId, node);
         if (!container) {
-            console.log(`Container for instance ${instanceId} not found, nothing to do.`);
+            console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
             return;
         }
 
@@ -97,15 +131,16 @@ export async function stopAndRemoveContainer(instanceId: number) {
         console.log(`Container for instance ${instanceId} removed successfully.`);
     } catch (error: any) {
         if (error.statusCode === 404) {
-             console.log(`Container for instance ${instanceId} not found, nothing to do.`);
+             console.log(`Container for instance ${instanceId} on node ${node.dockerHost} not found, nothing to do.`);
              return;
         }
-        console.error(`Error stopping/removing container for instance ${instanceId}:`, error);
+        console.error(`Error stopping/removing container for instance ${instanceId} on node ${node.dockerHost}:`, error);
         throw error;
     }
 }
 
-export async function findContainer(instanceId: number): Promise<Dockerode.ContainerInfo | null> {
+export async function findContainer(instanceId: number, node: WorkerNode): Promise<Dockerode.ContainerInfo | null> {
+    const docker = getDockerClientForNode(node);
     try {
         const containers = await docker.listContainers({
             all: true,
@@ -118,34 +153,35 @@ export async function findContainer(instanceId: number): Promise<Dockerode.Conta
             return null;
         }
         if (containers.length > 1) {
-            console.warn(`Found multiple containers for instance ${instanceId}. Using the first one.`);
+            console.warn(`Found multiple containers for instance ${instanceId} on node ${node.dockerHost}. Using the first one.`);
         }
         return containers[0];
     } catch (error) {
-        console.error(`Error finding container for instance ${instanceId}:`, error);
+        console.error(`Error finding container for instance ${instanceId} on node ${node.dockerHost}:`, error);
         return null;
     }
 }
 
-async function pullImage(imageName: string): Promise<void> {
-    console.log(`Ensuring image ${imageName} is available...`);
+async function pullImage(imageName: string, node: WorkerNode): Promise<void> {
+    const docker = getDockerClientForNode(node);
+    console.log(`Ensuring image ${imageName} is available on node ${node.dockerHost}...`);
     try {
         const images = await docker.listImages({ filters: { reference: [imageName] } });
         if (images.length > 0) {
-            console.log(`Image ${imageName} already exists locally.`);
+            console.log(`Image ${imageName} already exists on node.`);
             return;
         }
 
-        console.log(`Pulling image ${imageName}...`);
+        console.log(`Pulling image ${imageName} on node ${node.dockerHost}...`);
         const pullStream = await docker.pull(imageName);
         
         await new Promise<void>((resolve, reject) => {
             docker.modem.followProgress(pullStream, (err, _res) => err ? reject(err) : resolve());
         });
 
-        console.log(`Image ${imageName} pulled successfully.`);
+        console.log(`Image ${imageName} pulled successfully on node.`);
     } catch (error) {
-        console.error(`Failed to pull image ${imageName}:`, error);
+        console.error(`Failed to pull image ${imageName} on node ${node.dockerHost}:`, error);
         throw error;
     }
 }
